@@ -27,3 +27,4 @@ indexes/
 
 # logs
 *.log
+cache/
