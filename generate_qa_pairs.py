@@ -5,21 +5,23 @@ import json
 import csv
 from pathlib import Path
 from tqdm.asyncio import tqdm
+import random
 
 # --- Configuration ---
 VLLM_BASE_URL = "http://localhost:8000/v1"
 VLLM_API_KEY = "EMPTY"
-MODEL_NAME = "/media/public/models/huggingface/Qwen/Qwen3-32B/"  # 使用 Qwen3-32B 模型
+MODEL_NAME = "/media/public/models/huggingface/Qwen/Qwen2.5-7B-Instruct"
 
 # Input JSONL file
-INPUT_JSONL_FILE = Path("data/llm_processed_meaningful_articles_v2_rag.jsonl")
+INPUT_JSONL_FILE = Path("data/llm_processed_meaningful_articles_v3_rag.jsonl")
 # Key in the input JSONL that contains the article text
 INPUT_JSONL_CONTENT_KEY = "contents"
 # Key in the input JSONL to use as an identifier
 INPUT_JSONL_ID_KEY = "identifier"
 
 # Output TSV file for QA pairs (similar to example_ans.tsv format)
-OUTPUT_TSV_FILE = Path("generated_qa_pairs.tsv")
+OUTPUT_TSV_FILE = Path("generated_qa_pairs.jsonl")
+OUTPUT_NUM = 1000  # 生成的问答对数量
 
 # Concurrency and Retry Settings
 MAX_CONCURRENT_TASKS = 200  # 降低并发数，避免对模型造成压力
@@ -59,22 +61,23 @@ async def generate_qa_pairs(
     max_content_length = 3000
     if len(article_content) > max_content_length:
         article_content = article_content[:max_content_length] + "..."
-    
-    date = item_id_for_log.split('/')[1]
+    reference = item_id_for_log
+
+    date = item_id_for_log.split("/")[1]
     date = f"{date[:4]}年{date[4:6]}月{date[6:]}日" if len(date) == 8 else date
     article_content = f"{date}报告\n\n{article_content}"
     prompt = PROMPT_TEMPLATE.format(content=article_content)
-    
+
     for attempt in range(MAX_MODEL_RETRIES):
         try:
             response = await client.chat.completions.create(
                 model=MODEL_NAME,
                 messages=[
                     {
-                        "role": "system", 
-                        "content": "你是一个专业的问答对生成助手，能够根据文章内容生成高质量的问答对。"
+                        "role": "system",
+                        "content": "你是一个专业的问答对生成助手，能够根据文章内容生成高质量的问答对。",
                     },
-                    {"role": "user", "content": prompt}
+                    {"role": "user", "content": prompt},
                 ],
                 max_tokens=1000,
                 temperature=0,
@@ -83,44 +86,60 @@ async def generate_qa_pairs(
             raw_response = response.choices[0].message.content.strip()
             # print(f"Item ID: {item_id_for_log} - Model response: {raw_response}")
             # print(f"Item ID: {item_id_for_log}")
-            
+
             # 解析模型输出的问答对
-            raw_response = raw_response.split('</think>')[-1]
+            raw_response = raw_response.split("</think>")[-1]
             qa_pairs = []
-            lines = raw_response.split('\n')
+            lines = raw_response.split("\n")
             for line in lines:
                 line = line.strip()
-                if line.startswith('- '):
+                if line.startswith("- "):
                     # 处理以 "- " 开头的行
                     line = line[2:].strip()
-                    parts = line.split(': ')
+                    parts = line.split(": ")
                     if len(parts) >= 2:
                         question = parts[-2].strip()
                         answer = parts[-1].strip()
                         # 过滤掉过短或不合理的问答对
-                        if len(question) >= 10 and len(answer) >= 2 and len(answer) <= 50:
-                            qa_pairs.append((question, answer))
-            
+                        if (
+                            len(question) >= 10
+                            and len(answer) >= 2
+                            and len(answer) <= 50
+                        ):
+                            qa_pairs.append((question, answer, reference))
+
             if qa_pairs:
-                print(f"Item ID: {item_id_for_log} - Successfully generated {len(qa_pairs)} QA pairs")
+                print(
+                    f"Item ID: {item_id_for_log} - Successfully generated {len(qa_pairs)} QA pairs"
+                )
                 return qa_pairs
             else:
-                print(f"Item ID: {item_id_for_log} - No valid QA pairs found in response")
+                print(
+                    f"Item ID: {item_id_for_log} - No valid QA pairs found in response"
+                )
                 if attempt < MAX_MODEL_RETRIES - 1:
                     await asyncio.sleep(RETRY_DELAY_SECONDS)
-                    
+
         except openai.APIConnectionError as e:
-            print(f"Item ID: {item_id_for_log} - Attempt {attempt + 1}/{MAX_MODEL_RETRIES} - API connection error: {e}")
+            print(
+                f"Item ID: {item_id_for_log} - Attempt {attempt + 1}/{MAX_MODEL_RETRIES} - API connection error: {e}"
+            )
         except openai.RateLimitError as e:
-            print(f"Item ID: {item_id_for_log} - Attempt {attempt + 1}/{MAX_MODEL_RETRIES} - Rate limit error: {e}")
+            print(
+                f"Item ID: {item_id_for_log} - Attempt {attempt + 1}/{MAX_MODEL_RETRIES} - Rate limit error: {e}"
+            )
         except openai.APIStatusError as e:
-            print(f"Item ID: {item_id_for_log} - Attempt {attempt + 1}/{MAX_MODEL_RETRIES} - API status error: {e.status_code}")
+            print(
+                f"Item ID: {item_id_for_log} - Attempt {attempt + 1}/{MAX_MODEL_RETRIES} - API status error: {e.status_code}"
+            )
         except Exception as e:
-            print(f"Item ID: {item_id_for_log} - Attempt {attempt + 1}/{MAX_MODEL_RETRIES} - General error: {type(e).__name__} - {e}")
-        
+            print(
+                f"Item ID: {item_id_for_log} - Attempt {attempt + 1}/{MAX_MODEL_RETRIES} - General error: {type(e).__name__} - {e}"
+            )
+
         if attempt < MAX_MODEL_RETRIES - 1:
             await asyncio.sleep(RETRY_DELAY_SECONDS)
-    
+
     print(f"Item ID: {item_id_for_log} - Failed to generate QA pairs after all retries")
     return []
 
@@ -157,7 +176,9 @@ async def main():
 
     print(f"Processing articles from: {INPUT_JSONL_FILE.resolve()}")
     print(f"Saving QA pairs to: {OUTPUT_TSV_FILE.resolve()}")
-    print(f"Max concurrent tasks: {MAX_CONCURRENT_TASKS}, Model retries: {MAX_MODEL_RETRIES}")
+    print(
+        f"Max concurrent tasks: {MAX_CONCURRENT_TASKS}, Model retries: {MAX_MODEL_RETRIES}"
+    )
 
     # 如果输出文件已存在，删除它
     if OUTPUT_TSV_FILE.exists():
@@ -174,7 +195,7 @@ async def main():
         article_batch_data = []
         total_items = 0
         processed_items = 0
-        
+
         try:
             async with aiofiles.open(INPUT_JSONL_FILE, "r", encoding="utf-8") as f_in:
                 line_number = 0
@@ -183,19 +204,25 @@ async def main():
                     total_items += 1
                     try:
                         json_obj = json.loads(line)
-                        identifier = json_obj.get(INPUT_JSONL_ID_KEY, f"line_{line_number}")
+                        identifier = json_obj.get(INPUT_JSONL_ID_KEY)
                         article_batch_data.append((json_obj, identifier))
-                        
-                        # 限制处理的文章数量以控制时间
-                        # if len(article_batch_data) >= 50:  # 只处理前50篇文章作为示例
-                        #     break
-                            
                     except json.JSONDecodeError:
                         print(f"Warning: Malformed JSON on line {line_number}")
                         continue
         except FileNotFoundError:
             print(f"Error: Input file {INPUT_JSONL_FILE} not found")
             return
+
+        if not article_batch_data:
+            print("No valid articles found in the input file.")
+            return
+
+        # 随机选取100个数据
+        article_batch_data = random.sample(
+            article_batch_data, min(OUTPUT_NUM, len(article_batch_data))
+        )
+
+        print(f"Selected {len(article_batch_data)} articles to process")
 
         if not article_batch_data:
             print("No valid articles found in the input file.")
@@ -209,27 +236,44 @@ async def main():
 
         # 准备写入TSV文件
         all_qa_pairs = []
-        
+
         # 处理任务并收集结果
-        for future in tqdm(asyncio.as_completed(tasks), total=len(tasks), desc="处理文章"):
+        for future in tqdm(
+            asyncio.as_completed(tasks), total=len(tasks), desc="处理文章"
+        ):
             processed_items += 1
             try:
                 qa_pairs = await future
                 all_qa_pairs.extend(qa_pairs)
-                
+
                 if processed_items % 10 == 0 or processed_items == len(tasks):
-                    print(f"Progress: {processed_items}/{len(tasks)} articles processed. Total QA pairs: {len(all_qa_pairs)}")
-                    
+                    print(
+                        f"Progress: {processed_items}/{len(tasks)} articles processed. Total QA pairs: {len(all_qa_pairs)}"
+                    )
+
             except Exception as e:
                 print(f"Error processing a task: {e}")
 
         # 写入TSV文件
         if all_qa_pairs:
-            with open(OUTPUT_TSV_FILE, 'w', encoding='utf-8', newline='') as f_out:
-                writer = csv.writer(f_out, delimiter='\t')
-                for question, answer in all_qa_pairs:
-                    writer.writerow([question, answer])
-        
+            with open(OUTPUT_TSV_FILE, "w", encoding="utf-8", newline="") as f:
+                for question, answer, reference in all_qa_pairs:
+                    # {
+                    #     "question": "全球首个“双奥之城”是哪个城市？",
+                    #     "answer": "北京",
+                    #     "reference": "http://paper.people.com.cn/rmrb/html/2023-05/07/nw.D110000renmrb_20230507_4-01.htm"
+                    # },
+                    f.write(
+                        json.dumps(
+                            {
+                                "question": question,
+                                "answer": answer,
+                                "reference": reference,
+                            }
+                        )
+                        + "\n"
+                    )
+
         print(f"\n--- Processing Complete ---")
         print(f"Total articles processed: {len(article_batch_data)}")
         print(f"Total QA pairs generated: {len(all_qa_pairs)}")

@@ -10,12 +10,12 @@ VLLM_API_KEY = "EMPTY"  # Or your actual API key if required by vLLM
 MODEL_NAME = "/media/public/models/huggingface/Qwen/Qwen2.5-7B-Instruct"  # Or the specific model ID you are using with vLLM
 
 # Input JSONL file
-INPUT_JSONL_FILE = Path("rmrb_data_deduplicate.jsonl")
+INPUT_JSONL_FILE = Path("rmrb_data_deduplicate_new.jsonl")
 # Key in the input JSONL that contains the article text
 INPUT_JSONL_CONTENT_KEY = "content"
 # Key in the input JSONL to use as an identifier (e.g., "id", "source_path"). Fallbacks to line number if not found.
 INPUT_JSONL_ID_KEY = (
-    "id"  # Or "source_path", or any other unique key in your input JSONL
+    "file_path"  # Or "source_path", or any other unique key in your input JSONL
 )
 
 # Output JSONL file for meaningful articles
@@ -23,7 +23,7 @@ OUTPUT_JSONL_FILE = Path("llm_processed_meaningful_articles.jsonl")
 
 # Concurrency and Retry Settings
 MAX_CONCURRENT_TASKS = (
-    10  # Adjust based on your vLLM server capacity and system resources
+    1000  # Adjust based on your vLLM server capacity and system resources
 )
 MAX_MODEL_RETRIES = 3  # Max retries for model if output is not "是" or "否"
 RETRY_DELAY_SECONDS = 5  # Delay between retries
