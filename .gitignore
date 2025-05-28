@@ -13,8 +13,10 @@ wheels/
 
 # data
 rmrb_data
+*.json
 *.jsonl
 *.[ct]sv
+*.xlsx
 
 # rag
 FlashRAG
@@ -22,3 +24,6 @@ indexes/
 
 # others
 *.pdf
+
+# logs
+*.log
