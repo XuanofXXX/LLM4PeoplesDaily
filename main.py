@@ -56,7 +56,7 @@ def setup_logger():
 logger = setup_logger()
 
 # --- Configuration ---
-JSONL_FILE_PATH = "data/llm_processed_meaningful_articles_v2_rag.jsonl"
+JSONL_FILE_PATH = "data/llm_processed_meaningful_articles_v3_rag.jsonl"
 EXAMPLE_ANS_PATH = "data/eval/official_test_ans.json"
 VLLM_API_BASE = "http://localhost:8000/v1"
 MODEL_NAME = "/media/public/models/huggingface/Qwen/Qwen2.5-7B-Instruct"  # 使用完整路径
@@ -480,7 +480,6 @@ def setup_openai_client():
     logger.info("OpenAI client setup complete.")
     return client
 
-
 # --- 6. RAG Query Function ---
 def rag_query(
     query, retrieval_components, documents, doc_ids, client, top_k=TOP_K_DOCUMENTS
@@ -491,9 +490,9 @@ def rag_query(
     bm25_index, dense_model, document_embeddings = retrieval_components
 
     # 根据配置选择检索方法
-    if RETRIEVAL_METHOD == "bm25":
+    if RETRIEVAL_METHOD == "bm25" or (RETRIEVAL_METHOD == "hybrid" and DENSE_WEIGHT == 0):
         top_indices, scores = bm25_retrieve(query, bm25_index, top_k)
-    elif RETRIEVAL_METHOD == "dense" and dense_model is not None:
+    elif (RETRIEVAL_METHOD == "dense"  or RETRIEVAL_METHOD == "hybrid" and BM25_WEIGHT == 0) and dense_model is not None:
         top_indices, scores = dense_retrieve(
             query, dense_model, document_embeddings, top_k
         )
@@ -514,7 +513,7 @@ def rag_query(
         f"Retrieved {len(retrieved_docs_content)} documents using {RETRIEVAL_METHOD}:"
     )
     for i, (doc_id, score) in enumerate(zip(retrieved_docs_ids, scores)):
-        logger.info(f"  Doc ID: {doc_id}, Score: {score:.4f}")
+        logger.debug(f"  Doc ID: {doc_id}, Score: {score:.4f}")
 
     # 2. Truncate documents to fit within model limits
     max_doc_length = 2000  # 限制每个文档的最大字符数
@@ -555,8 +554,8 @@ def rag_query(
 
         answer = response.choices[0].message.content.strip()
 
-        logger.info("LLM Answer:")
-        logger.info(answer)
+        logger.debug("LLM Answer:")
+        logger.debug(answer)
         return answer, retrieved_docs_ids, retrieved_docs_content
 
     except Exception as e:
@@ -567,14 +566,14 @@ def rag_query(
 # --- 7. Batch Testing Function ---
 def run_batch_test(test_queries, retrieval_components, documents, doc_ids, client):
     """批量运行测试查询"""
-    logger.info(f"=== Running batch test on {len(test_queries)} queries ===")
+    logger.debug(f"=== Running batch test on {len(test_queries)} queries ===")
 
     results = []
     for i, (query, expected_answer, reference) in enumerate(test_queries):
-        logger.info(f"--- Test {i + 1}/{len(test_queries)} ---")
-        logger.info(f"Query: {query}")
-        logger.info(f"Expected: {expected_answer}")
-        logger.info(f"Reference: {reference}")
+        logger.debug(f"--- Test {i + 1}/{len(test_queries)} ---")
+        logger.debug(f"Query: {query}")
+        logger.debug(f"Expected: {expected_answer}")
+        logger.debug(f"Reference: {reference}")
 
         generated_answer, retrieved_ids, retrieved_contents = rag_query(
             query, retrieval_components, documents, doc_ids, client
@@ -596,13 +595,28 @@ def run_batch_test(test_queries, retrieval_components, documents, doc_ids, clien
             }
         )
 
-        logger.info("-" * 50)
+        logger.debug("-" * 50)
 
     return results
 
 
 # --- Main Execution ---
 if __name__ == "__main__":
+    # 记录当前配置到日志
+    logger.info("=== RAG System Configuration ===")
+    logger.info(f"JSONL_FILE_PATH: {JSONL_FILE_PATH}")
+    logger.info(f"EXAMPLE_ANS_PATH: {EXAMPLE_ANS_PATH}")
+    logger.info(f"VLLM_API_BASE: {VLLM_API_BASE}")
+    logger.info(f"MODEL_NAME: {MODEL_NAME}")
+    logger.info(f"MAX_NEW_TOKENS: {MAX_NEW_TOKENS}")
+    logger.info(f"TOP_K_DOCUMENTS: {TOP_K_DOCUMENTS}")
+    logger.info(f"DENSE_MODEL_NAME: {DENSE_MODEL_NAME}")
+    logger.info(f"RETRIEVAL_METHOD: {RETRIEVAL_METHOD}")
+    logger.info(f"BM25_WEIGHT: {BM25_WEIGHT}")
+    logger.info(f"DENSE_WEIGHT: {DENSE_WEIGHT}")
+    logger.info(f"CACHE_BASE_DIR: {CACHE_BASE_DIR}")
+    logger.info("=" * 40)
+
     # 1. 加载数据
     documents, doc_ids = load_documents_from_jsonl(JSONL_FILE_PATH)
 
@@ -633,8 +647,11 @@ if __name__ == "__main__":
     logger.info(f"Available caches: {len(available_caches)}")
     for cache in available_caches:
         cache_info = cache['info']
-        logger.info(f"  - {os.path.basename(cache['dir'])}: {cache_info.get('file_path', 'Unknown')} "
-                   f"(last accessed: {cache_info.get('last_accessed', 'Unknown')})")
+        config = cache_info.get('config', {})
+        logger.info(f"  - {os.path.basename(cache['dir'])}: {cache_info.get('file_path', 'Unknown')}")
+        logger.info(f"    Method: {cache_info.get('retrieval_method', 'Unknown')}, "
+                   f"BM25/Dense: {config.get('bm25_weight', 'N/A')}/{config.get('dense_weight', 'N/A')}, "
+                   f"Last accessed: {cache_info.get('last_accessed', 'Unknown')}")
 
     # 5. 构建检索索引
     logger.info(f"Building retrieval indices with method: {RETRIEVAL_METHOD}")
