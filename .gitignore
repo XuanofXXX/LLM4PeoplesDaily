@@ -13,3 +13,12 @@ wheels/
 
 # data
 rmrb_data
+*.jsonl
+*.[ct]sv
+
+# rag
+FlashRAG
+indexes/
+
+# others
+*.pdf
