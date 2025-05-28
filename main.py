@@ -8,6 +8,11 @@ import os
 from openai import OpenAI
 import logging
 from datetime import datetime
+import numpy as np
+from sentence_transformers import SentenceTransformer
+from sklearn.metrics.pairwise import cosine_similarity
+import pickle
+import hashlib
 
 from utils import cal_em, is_match, is_set_match
 
@@ -52,11 +57,18 @@ logger = setup_logger()
 
 # --- Configuration ---
 JSONL_FILE_PATH = "data/llm_processed_meaningful_articles_v2_rag.jsonl"
-EXAMPLE_ANS_PATH = "data/test_ans.json"
+EXAMPLE_ANS_PATH = "data/eval/official_test_ans.json"
 VLLM_API_BASE = "http://localhost:8000/v1"
 MODEL_NAME = "/media/public/models/huggingface/Qwen/Qwen2.5-7B-Instruct"  # 使用完整路径
 MAX_NEW_TOKENS = 500
 TOP_K_DOCUMENTS = 3
+
+# Dense retrieval配置
+DENSE_MODEL_NAME = "/media/public/models/huggingface/BAAI/bge-large-zh-v1.5"  # 中文语义检索模型
+RETRIEVAL_METHOD = "hybrid"  # 选项: "bm25", "dense", "hybrid"
+BM25_WEIGHT = 0.3  # 混合检索中BM25的权重
+DENSE_WEIGHT = 0.7  # 混合检索中dense retrieval的权重
+CACHE_BASE_DIR = "cache"  # 基础缓存目录
 
 PROMPT_TEMPLATE = """
 ## 指令
@@ -78,6 +90,142 @@ PROMPT_TEMPLATE = """
 ## 问题
 {query}
 """.strip()
+
+
+# --- Cache Management ---
+def calculate_file_hash(file_path):
+    """计算文件的MD5哈希值"""
+    if not os.path.exists(file_path):
+        return None
+    
+    hash_md5 = hashlib.md5()
+    with open(file_path, "rb") as f:
+        for chunk in iter(lambda: f.read(4096), b""):
+            hash_md5.update(chunk)
+    return hash_md5.hexdigest()
+
+def get_cache_dir(file_path, retrieval_method, dense_model_name):
+    """根据文件哈希和配置生成缓存目录"""
+    file_hash = calculate_file_hash(file_path)
+    if not file_hash:
+        return None
+    
+    # 使用文件哈希前8位作为目录名，避免过长
+    cache_dir_name = f"{file_hash[:8]}_{retrieval_method}_{os.path.basename(dense_model_name)}"
+    cache_dir = os.path.join(CACHE_BASE_DIR, cache_dir_name)
+    return cache_dir, file_hash
+
+def get_cache_paths(cache_dir):
+    """获取缓存文件路径"""
+    if not cache_dir:
+        return None, None, None
+    
+    return {
+        'embeddings': os.path.join(cache_dir, "document_embeddings.pkl"),
+        'bm25': os.path.join(cache_dir, "bm25_index.pkl"),
+        'info': os.path.join(cache_dir, "cache_info.json")
+    }
+
+def save_cache_info(cache_dir, file_hash, retrieval_method, dense_model_name, file_path):
+    """保存缓存信息"""
+    cache_info = {
+        "file_hash": file_hash,
+        "file_path": file_path,
+        "retrieval_method": retrieval_method,
+        "dense_model_name": dense_model_name,
+        "timestamp": datetime.now().isoformat(),
+        "last_accessed": datetime.now().isoformat()
+    }
+    
+    os.makedirs(cache_dir, exist_ok=True)
+    cache_info_path = os.path.join(cache_dir, "cache_info.json")
+    with open(cache_info_path, "w", encoding="utf-8") as f:
+        json.dump(cache_info, f, ensure_ascii=False, indent=2)
+
+def load_cache_info(cache_dir):
+    """加载缓存信息"""
+    if not cache_dir:
+        return None
+    
+    cache_info_path = os.path.join(cache_dir, "cache_info.json")
+    if not os.path.exists(cache_info_path):
+        return None
+    
+    try:
+        with open(cache_info_path, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception as e:
+        logger.warning(f"Failed to load cache info from {cache_info_path}: {e}")
+        return None
+
+def update_cache_access_time(cache_dir):
+    """更新缓存访问时间"""
+    if not cache_dir:
+        return
+    
+    cache_info = load_cache_info(cache_dir)
+    if cache_info:
+        cache_info["last_accessed"] = datetime.now().isoformat()
+        cache_info_path = os.path.join(cache_dir, "cache_info.json")
+        with open(cache_info_path, "w", encoding="utf-8") as f:
+            json.dump(cache_info, f, ensure_ascii=False, indent=2)
+
+def is_cache_valid(cache_dir, file_path, retrieval_method, dense_model_name):
+    """检查缓存是否有效"""
+    cache_info = load_cache_info(cache_dir)
+    if not cache_info:
+        return False
+    
+    current_hash = calculate_file_hash(file_path)
+    
+    is_valid = (
+        cache_info.get("file_hash") == current_hash and
+        cache_info.get("retrieval_method") == retrieval_method and
+        cache_info.get("dense_model_name") == dense_model_name
+    )
+    
+    if is_valid:
+        update_cache_access_time(cache_dir)
+        logger.info(f"Using existing cache from {cache_dir}")
+    
+    return is_valid
+
+def list_available_caches():
+    """列出所有可用的缓存"""
+    if not os.path.exists(CACHE_BASE_DIR):
+        return []
+    
+    caches = []
+    for cache_dir_name in os.listdir(CACHE_BASE_DIR):
+        cache_dir = os.path.join(CACHE_BASE_DIR, cache_dir_name)
+        if os.path.isdir(cache_dir):
+            cache_info = load_cache_info(cache_dir)
+            if cache_info:
+                caches.append({
+                    'dir': cache_dir,
+                    'info': cache_info
+                })
+    
+    return caches
+
+def cleanup_old_caches(max_caches=10):
+    """清理旧的缓存，保留最近使用的缓存"""
+    caches = list_available_caches()
+    if len(caches) <= max_caches:
+        return
+    
+    # 按最后访问时间排序
+    caches.sort(key=lambda x: x['info'].get('last_accessed', ''), reverse=True)
+    
+    # 删除最旧的缓存
+    for cache in caches[max_caches:]:
+        cache_dir = cache['dir']
+        try:
+            import shutil
+            shutil.rmtree(cache_dir)
+            logger.info(f"Cleaned up old cache: {cache_dir}")
+        except Exception as e:
+            logger.warning(f"Failed to cleanup cache {cache_dir}: {e}")
 
 
 # --- 1. Data Loading and Preprocessing ---
@@ -165,18 +313,161 @@ def chinese_tokenizer(text):
     return list(jieba.cut(text))
 
 
-# --- 2. BM25 Indexing ---
-def build_bm25_index(documents):
-    """构建 BM25 索引"""
+# --- 2. Dense Retrieval Setup ---
+def setup_dense_retrieval_model():
+    """设置dense retrieval模型"""
+    logger.info(f"Loading dense retrieval model: {DENSE_MODEL_NAME}")
+    try:
+        model = SentenceTransformer(DENSE_MODEL_NAME)
+        logger.info("Dense retrieval model loaded successfully.")
+        return model
+    except Exception as e:
+        logger.error(f"Failed to load dense retrieval model: {e}")
+        logger.info("Falling back to BM25 only.")
+        return None
+
+
+def build_document_embeddings(documents, dense_model, cache_path=None):
+    """构建文档的dense embeddings"""
+    if cache_path and os.path.exists(cache_path):
+        logger.info(f"Loading cached document embeddings from {cache_path}")
+        try:
+            with open(cache_path, "rb") as f:
+                embeddings = pickle.load(f)
+            logger.info(f"Loaded {embeddings.shape[0]} cached embeddings.")
+            return embeddings
+        except Exception as e:
+            logger.warning(f"Failed to load embeddings cache: {e}")
+
+    logger.info("Building document embeddings...")
+    # 预处理文档：截断过长的文档
+    processed_docs = []
+    for doc in documents:
+        if len(doc) > 512:  # 限制输入长度
+            processed_docs.append(doc[:512])
+        else:
+            processed_docs.append(doc)
+
+    embeddings = dense_model.encode(
+        processed_docs, batch_size=32, show_progress_bar=True
+    )
+
+    # 缓存embeddings
+    if cache_path:
+        os.makedirs(os.path.dirname(cache_path), exist_ok=True)
+        try:
+            with open(cache_path, "wb") as f:
+                pickle.dump(embeddings, f)
+            logger.info(f"Document embeddings cached to {cache_path}")
+        except Exception as e:
+            logger.warning(f"Failed to cache embeddings: {e}")
+
+    logger.info(f"Built embeddings for {len(embeddings)} documents.")
+    return embeddings
+
+
+# --- 3. BM25 Indexing ---
+def build_bm25_index(documents, cache_path=None):
+    """构建 BM25 索引，支持缓存"""
+    if cache_path and os.path.exists(cache_path):
+        logger.info(f"Loading cached BM25 index from {cache_path}")
+        try:
+            with open(cache_path, "rb") as f:
+                bm25 = pickle.load(f)
+            logger.info("BM25 index loaded from cache.")
+            return bm25
+        except Exception as e:
+            logger.warning(f"Failed to load BM25 cache: {e}")
+    
     logger.info("Tokenizing documents for BM25...")
     tokenized_corpus = [chinese_tokenizer(doc) for doc in documents]
     logger.info("Building BM25 index...")
     bm25 = BM25Okapi(tokenized_corpus)
     logger.info("BM25 index built.")
+    
+    # 缓存BM25索引
+    if cache_path:
+        os.makedirs(os.path.dirname(cache_path), exist_ok=True)
+        try:
+            with open(cache_path, "wb") as f:
+                pickle.dump(bm25, f)
+            logger.info(f"BM25 index cached to {cache_path}")
+        except Exception as e:
+            logger.warning(f"Failed to cache BM25 index: {e}")
+    
     return bm25
 
 
-# --- 3. OpenAI Client Setup ---
+# --- 4. Retrieval Functions ---
+def bm25_retrieve(query, bm25_index, top_k):
+    """使用BM25检索"""
+    tokenized_query = chinese_tokenizer(query)
+    doc_scores = bm25_index.get_scores(tokenized_query)
+    top_indices = np.argsort(doc_scores)[::-1][:top_k]
+    return top_indices, doc_scores[top_indices]
+
+
+def dense_retrieve(query, dense_model, document_embeddings, top_k):
+    """使用dense retrieval检索"""
+    query_embedding = dense_model.encode([query])
+    similarities = cosine_similarity(query_embedding, document_embeddings)[0]
+    top_indices = np.argsort(similarities)[::-1][:top_k]
+    return top_indices, similarities[top_indices]
+
+
+def hybrid_retrieve(
+    query,
+    bm25_index,
+    dense_model,
+    document_embeddings,
+    top_k,
+    bm25_weight=BM25_WEIGHT,
+    dense_weight=DENSE_WEIGHT,
+):
+    """混合检索策略"""
+    # 获取更多的候选文档用于重排序
+    candidate_k = min(top_k * 3, len(document_embeddings))
+
+    # BM25检索
+    bm25_indices, bm25_scores = bm25_retrieve(query, bm25_index, candidate_k)
+
+    # Dense检索
+    dense_indices, dense_scores = dense_retrieve(
+        query, dense_model, document_embeddings, candidate_k
+    )
+
+    # 归一化分数
+    bm25_scores_norm = (bm25_scores - bm25_scores.min()) / (
+        bm25_scores.max() - bm25_scores.min() + 1e-8
+    )
+    dense_scores_norm = (dense_scores - dense_scores.min()) / (
+        dense_scores.max() - dense_scores.min() + 1e-8
+    )
+
+    # 合并分数
+    combined_scores = {}
+
+    # 添加BM25分数
+    for i, idx in enumerate(bm25_indices):
+        combined_scores[idx] = bm25_weight * bm25_scores_norm[i]
+
+    # 添加dense分数
+    for i, idx in enumerate(dense_indices):
+        if idx in combined_scores:
+            combined_scores[idx] += dense_weight * dense_scores_norm[i]
+        else:
+            combined_scores[idx] = dense_weight * dense_scores_norm[i]
+
+    # 排序并返回top_k
+    sorted_indices = sorted(
+        combined_scores.keys(), key=lambda x: combined_scores[x], reverse=True
+    )[:top_k]
+    sorted_scores = [combined_scores[idx] for idx in sorted_indices]
+
+    return np.array(sorted_indices), np.array(sorted_scores)
+
+
+# --- 5. OpenAI Client Setup ---
 def setup_openai_client():
     """设置 OpenAI 客户端连接到 VLLM 服务器"""
     logger.info(
@@ -190,24 +481,40 @@ def setup_openai_client():
     return client
 
 
-# --- 4. RAG Query Function ---
+# --- 6. RAG Query Function ---
 def rag_query(
-    query, bm25_index, original_documents, doc_ids, client, top_k=TOP_K_DOCUMENTS
+    query, retrieval_components, documents, doc_ids, client, top_k=TOP_K_DOCUMENTS
 ):
     """执行 RAG 查询"""
-    logger.info(f"Performing RAG query: '{query}'")
-    # 1. Retrieve relevant documents
-    tokenized_query = chinese_tokenizer(query)
-    doc_scores = bm25_index.get_scores(tokenized_query)
+    logger.info(f"Performing RAG query: '{query}' using {RETRIEVAL_METHOD} retrieval")
 
-    top_n_indices = sorted(
-        range(len(doc_scores)), key=lambda i: doc_scores[i], reverse=True
-    )[:top_k]
-    retrieved_docs_content = [original_documents[i] for i in top_n_indices]
-    retrieved_docs_ids = [doc_ids[i] for i in top_n_indices]
-    logger.info(f"Retrieved {len(retrieved_docs_content)} documents.")
-    for i, doc_id in enumerate(retrieved_docs_ids):
-        logger.info(f"  Doc ID: {doc_id}, Score: {doc_scores[top_n_indices[i]]:.4f}")
+    bm25_index, dense_model, document_embeddings = retrieval_components
+
+    # 根据配置选择检索方法
+    if RETRIEVAL_METHOD == "bm25":
+        top_indices, scores = bm25_retrieve(query, bm25_index, top_k)
+    elif RETRIEVAL_METHOD == "dense" and dense_model is not None:
+        top_indices, scores = dense_retrieve(
+            query, dense_model, document_embeddings, top_k
+        )
+    elif RETRIEVAL_METHOD == "hybrid" and dense_model is not None:
+        top_indices, scores = hybrid_retrieve(
+            query, bm25_index, dense_model, document_embeddings, top_k
+        )
+    else:
+        logger.warning(
+            "Dense model not available or invalid retrieval method, falling back to BM25"
+        )
+        top_indices, scores = bm25_retrieve(query, bm25_index, top_k)
+
+    retrieved_docs_content = [documents[i] for i in top_indices]
+    retrieved_docs_ids = [doc_ids[i] for i in top_indices]
+
+    logger.info(
+        f"Retrieved {len(retrieved_docs_content)} documents using {RETRIEVAL_METHOD}:"
+    )
+    for i, (doc_id, score) in enumerate(zip(retrieved_docs_ids, scores)):
+        logger.info(f"  Doc ID: {doc_id}, Score: {score:.4f}")
 
     # 2. Truncate documents to fit within model limits
     max_doc_length = 2000  # 限制每个文档的最大字符数
@@ -219,7 +526,6 @@ def rag_query(
             truncated_docs.append(doc)
 
     # 3. Construct context and messages
-
     context = "\n\n".join(
         [f"文档{i + 1}: {doc}" for i, doc in enumerate(truncated_docs)]
     )
@@ -234,7 +540,6 @@ def rag_query(
         {"role": "user", "content": prompt},
     ]
 
-    # logger.info(f"Sending request to VLLM server...")
     logger.info(f"Context length: {len(context)} characters")
 
     # 4. Generate answer using OpenAI API format
@@ -259,8 +564,8 @@ def rag_query(
         return "抱歉，生成答案时遇到问题。", retrieved_docs_ids, retrieved_docs_content
 
 
-# --- 5. Batch Testing Function ---
-def run_batch_test(test_queries, bm25_index, documents, doc_ids, client):
+# --- 7. Batch Testing Function ---
+def run_batch_test(test_queries, retrieval_components, documents, doc_ids, client):
     """批量运行测试查询"""
     logger.info(f"=== Running batch test on {len(test_queries)} queries ===")
 
@@ -272,7 +577,7 @@ def run_batch_test(test_queries, bm25_index, documents, doc_ids, client):
         logger.info(f"Reference: {reference}")
 
         generated_answer, retrieved_ids, retrieved_contents = rag_query(
-            query, bm25_index, documents, doc_ids, client
+            query, retrieval_components, documents, doc_ids, client
         )
 
         results.append(
@@ -305,10 +610,75 @@ if __name__ == "__main__":
         logger.error("No documents loaded. Exiting.")
         exit()
 
-    # 2. 构建 BM25 索引
-    bm25_index = build_bm25_index(documents)
+    # 2. 获取缓存目录和路径
+    cache_result = get_cache_dir(JSONL_FILE_PATH, RETRIEVAL_METHOD, DENSE_MODEL_NAME)
+    if cache_result:
+        cache_dir, file_hash = cache_result
+        cache_paths = get_cache_paths(cache_dir)
+    else:
+        cache_dir = None
+        cache_paths = None
+        file_hash = None
 
-    # 3. 设置 OpenAI 客户端
+    # 3. 检查缓存有效性
+    cache_valid = False
+    if cache_dir:
+        cache_valid = is_cache_valid(cache_dir, JSONL_FILE_PATH, RETRIEVAL_METHOD, DENSE_MODEL_NAME)
+    
+    logger.info(f"Cache directory: {cache_dir}")
+    logger.info(f"Cache valid: {cache_valid}")
+
+    # 4. 列出可用缓存（用于调试）
+    available_caches = list_available_caches()
+    logger.info(f"Available caches: {len(available_caches)}")
+    for cache in available_caches:
+        cache_info = cache['info']
+        logger.info(f"  - {os.path.basename(cache['dir'])}: {cache_info.get('file_path', 'Unknown')} "
+                   f"(last accessed: {cache_info.get('last_accessed', 'Unknown')})")
+
+    # 5. 构建检索索引
+    logger.info(f"Building retrieval indices with method: {RETRIEVAL_METHOD}")
+
+    # 构建BM25索引（使用缓存）
+    bm25_cache_path = cache_paths['bm25'] if cache_valid and cache_paths else None
+    bm25_index = build_bm25_index(documents, bm25_cache_path)
+
+    # 设置dense retrieval（如果需要）
+    dense_model = None
+    document_embeddings = None
+
+    if RETRIEVAL_METHOD in ["dense", "hybrid"]:
+        dense_model = setup_dense_retrieval_model()
+        if dense_model is not None:
+            embeddings_cache_path = cache_paths['embeddings'] if cache_valid and cache_paths else None
+            document_embeddings = build_document_embeddings(
+                documents, dense_model, embeddings_cache_path
+            )
+        else:
+            logger.warning("Dense model setup failed, using BM25 only")
+            RETRIEVAL_METHOD = "bm25"
+
+    # 6. 如果缓存无效或不存在，保存新的缓存
+    if not cache_valid and cache_dir and file_hash:
+        logger.info("Saving new cache...")
+        save_cache_info(cache_dir, file_hash, RETRIEVAL_METHOD, DENSE_MODEL_NAME, JSONL_FILE_PATH)
+        
+        # 保存索引缓存
+        if cache_paths:
+            if not os.path.exists(cache_paths['bm25']):
+                try:
+                    with open(cache_paths['bm25'], "wb") as f:
+                        pickle.dump(bm25_index, f)
+                    logger.info(f"BM25 index cached to {cache_paths['bm25']}")
+                except Exception as e:
+                    logger.warning(f"Failed to cache BM25 index: {e}")
+        
+        # 清理旧缓存
+        cleanup_old_caches()
+
+    retrieval_components = (bm25_index, dense_model, document_embeddings)
+
+    # 7. 设置 OpenAI 客户端
     try:
         client = setup_openai_client()
     except Exception as e:
@@ -316,28 +686,32 @@ if __name__ == "__main__":
         logger.error("Please make sure VLLM server is running on http://localhost:8000")
         exit()
 
-    # 4. 加载测试查询
+    # 8. 加载测试查询
     test_queries = load_test_queries(EXAMPLE_ANS_PATH)
 
     if test_queries:
         # 运行批量测试
         test_results = run_batch_test(
-            test_queries, bm25_index, documents, doc_ids, client
+            test_queries, retrieval_components, documents, doc_ids, client
         )
 
         # 保存测试结果
-        with open("test_results.json", "w", encoding="utf-8") as f:
+        result_filename = f"test_results_{RETRIEVAL_METHOD}.json"
+        with open(result_filename, "w", encoding="utf-8") as f:
             json.dump(test_results, f, ensure_ascii=False, indent=2)
-        logger.info("Test results saved to test_results.json")
+        logger.info(f"Test results saved to {result_filename}")
+
         from utils import cal_em
 
         pred = [result["generated_answer"] for result in test_results]
         ans = [result["expected_answer"] for result in test_results]
 
-        logger.info(f"acc: {cal_em(pred, ans)}")
+        logger.info(
+            f"Accuracy with {RETRIEVAL_METHOD} retrieval: {cal_em(pred, ans):.4f}"
+        )
     else:
         logger.info("No test queries found, running example query...")
         test_query = "2024年3月18日,习近平总书记在湖南考察期间第一站来到了哪所学校？"
         generated_answer, retrieved_ids, retrieved_contents = rag_query(
-            test_query, bm25_index, documents, doc_ids, client
+            test_query, retrieval_components, documents, doc_ids, client
         )
