@@ -45,7 +45,7 @@ from main import (
     get_cache_paths,
     is_cache_valid,
 )
-from utils import is_match, is_set_match
+from ..utils import is_match, is_set_match
 
 # 配置参数
 from config import (
