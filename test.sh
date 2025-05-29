@@ -1,0 +1,11 @@
+
+BM25_WEIGHT=0.5 DENSE_WEIGHT=0.5 python main.py
+BM25_WEIGHT=0.3 DENSE_WEIGHT=0.7 python main.py
+BM25_WEIGHT=0.7 DENSE_WEIGHT=0.3 python main.py
+
+
+export JSONL_FILE_PATH="data/corpus_v3_20230101_20241231.jsonl"
+BM25_WEIGHT=0.5 DENSE_WEIGHT=0.5 python main.py
+BM25_WEIGHT=0.3 DENSE_WEIGHT=0.7 python main.py
+BM25_WEIGHT=0.7 DENSE_WEIGHT=0.3 python main.py
+

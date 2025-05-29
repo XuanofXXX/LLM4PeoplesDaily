@@ -165,6 +165,8 @@ async def main():
                 "GOOGLE_SEARCH_TOPK": GOOGLE_SEARCH_TOPK,
                 "USE_GOOGLE_FALLBACK": USE_GOOGLE_FALLBACK,
                 "accuracy": accuracy,
+                "input_file": JSONL_FILE_PATH,
+                "example_ans_path": EXAMPLE_ANS_PATH
             },
         )
         await rag_system.save_results_async(test_results, result_filename)
