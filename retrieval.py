@@ -9,18 +9,19 @@ import logging
 
 logger = logging.getLogger("rag_system")
 
+
 class RetrievalSystem:
     def __init__(self, dense_model_name=None):
         self.dense_model_name = dense_model_name
         self.dense_model = None
         self.bm25_index = None
         self.document_embeddings = None
-        
+
     def setup_dense_model(self):
         """设置dense retrieval模型"""
         if not self.dense_model_name:
             return None
-            
+
         logger.info(f"Loading dense retrieval model: {self.dense_model_name}")
         try:
             self.dense_model = SentenceTransformer(self.dense_model_name)
@@ -38,7 +39,9 @@ class RetrievalSystem:
             try:
                 with open(cache_path, "rb") as f:
                     self.document_embeddings = pickle.load(f)
-                logger.info(f"Loaded {self.document_embeddings.shape[0]} cached embeddings.")
+                logger.info(
+                    f"Loaded {self.document_embeddings.shape[0]} cached embeddings."
+                )
                 return self.document_embeddings
             except Exception as e:
                 logger.warning(f"Failed to load embeddings cache: {e}")
@@ -108,7 +111,7 @@ class RetrievalSystem:
         if not self.bm25_index:
             logger.error("BM25 index not built")
             return np.array([]), np.array([])
-            
+
         tokenized_query = chinese_tokenizer(query)
         doc_scores = self.bm25_index.get_scores(tokenized_query)
         top_indices = np.argsort(doc_scores)[::-1][:top_k]
@@ -119,7 +122,7 @@ class RetrievalSystem:
         if not self.dense_model or self.document_embeddings is None:
             logger.error("Dense model or embeddings not available")
             return np.array([]), np.array([])
-            
+
         query_embedding = self.dense_model.encode([query])
         similarities = cosine_similarity(query_embedding, self.document_embeddings)[0]
         top_indices = np.argsort(similarities)[::-1][:top_k]
@@ -127,15 +130,21 @@ class RetrievalSystem:
 
     def hybrid_retrieve(self, query, top_k, bm25_weight=0.5, dense_weight=0.5):
         """混合检索策略"""
-        if not self.bm25_index or not self.dense_model or self.document_embeddings is None:
-            logger.warning("Missing components for hybrid retrieval, falling back to available method")
+        if (
+            not self.bm25_index
+            or not self.dense_model
+            or self.document_embeddings is None
+        ):
+            logger.warning(
+                "Missing components for hybrid retrieval, falling back to available method"
+            )
             if self.bm25_index:
                 return self.bm25_retrieve(query, top_k)
             elif self.dense_model and self.document_embeddings is not None:
                 return self.dense_retrieve(query, top_k)
             else:
                 return np.array([]), np.array([])
-        
+
         # 获取更多的候选文档用于重排序
         candidate_k = min(top_k * 3, len(self.document_embeddings))
 
@@ -175,7 +184,9 @@ class RetrievalSystem:
 
         return np.array(sorted_indices), np.array(sorted_scores)
 
-    def retrieve(self, query, top_k, method="hybrid", bm25_weight=0.5, dense_weight=0.5):
+    def retrieve(
+        self, query, top_k, method="hybrid", bm25_weight=0.5, dense_weight=0.5
+    ):
         """统一的检索接口"""
         if method == "bm25" or (method == "hybrid" and dense_weight == 0):
             return self.bm25_retrieve(query, top_k)

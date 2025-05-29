@@ -5,6 +5,7 @@ from openai import AsyncOpenAI
 from utils import is_match, is_set_match
 from tqdm.asyncio import tqdm as async_tqdm
 import logging
+from google import GoogleSearcher
 
 logger = logging.getLogger("rag_system")
 
@@ -29,16 +30,28 @@ PROMPT_TEMPLATE = """
 {query}
 """.strip()
 
+
 class RAGQuerySystem:
-    def __init__(self, api_base, model_name, max_new_tokens=512):
+    def __init__(self, api_base, model_name, max_new_tokens=512, enable_google_search=False, google_search_topk=3):
         self.api_base = api_base
         self.model_name = model_name
         self.max_new_tokens = max_new_tokens
+        self.enable_google_search = enable_google_search
+        self.google_search_topk = google_search_topk
         self.client = None
         
+        # 初始化Google搜索器
+        if self.enable_google_search:
+            self.google_searcher = GoogleSearcher(topk=self.google_search_topk, sleep_interval=1.0)
+            logger.info(f"Google搜索已启用，返回Top-{self.google_search_topk}结果")
+        else:
+            self.google_searcher = None
+
     def setup_client(self):
         """设置 OpenAI 客户端连接到 VLLM 服务器"""
-        logger.info(f"Setting up AsyncOpenAI client to connect to VLLM server at {self.api_base}...")
+        logger.info(
+            f"Setting up AsyncOpenAI client to connect to VLLM server at {self.api_base}..."
+        )
         self.client = AsyncOpenAI(
             api_key="EMPTY",  # VLLM 服务器不需要真实的 API key
             base_url=self.api_base,
@@ -46,24 +59,73 @@ class RAGQuerySystem:
         logger.info("AsyncOpenAI client setup complete.")
         return self.client
 
-    async def rag_query(self, query, retrieval_system, documents, doc_ids, top_k=5, retrieval_method="hybrid", bm25_weight=0.5, dense_weight=0.5):
-        """执行 RAG 查询"""
-        logger.debug(f"Performing RAG query: '{query}' using {retrieval_method} retrieval")
+    async def google_search_async(self, query):
+        """异步执行Google搜索"""
+        if not self.google_searcher:
+            return []
+        
+        try:
+            logger.info(f"执行Google搜索: {query}")
+            # 使用异步搜索方法
+            search_results = await self.google_searcher.asearch(query, self.google_search_topk)
+            logger.info(f"Google搜索返回{len(search_results)}个结果")
+            return search_results
+        except Exception as e:
+            logger.error(f"Google搜索出错: {e}")
+            return []
 
-        # 执行检索
+    async def rag_query(
+        self,
+        query,
+        retrieval_system,
+        documents,
+        doc_ids,
+        top_k=5,
+        retrieval_method="hybrid",
+        bm25_weight=0.5,
+        dense_weight=0.5,
+        use_google_fallback=False,
+    ):
+        """执行 RAG 查询，支持Google搜索作为后备"""
+        logger.debug(
+            f"Performing RAG query: '{query}' using {retrieval_method} retrieval"
+        )
+
+        # 执行本地检索
         top_indices, scores = retrieval_system.retrieve(
             query, top_k, retrieval_method, bm25_weight, dense_weight
         )
 
-        if len(top_indices) == 0:
-            logger.warning("No documents retrieved")
+        retrieved_docs_content = []
+        retrieved_docs_ids = []
+        context_sources = []  # 记录上下文来源
+
+        if len(top_indices) > 0:
+            retrieved_docs_content = [documents[i] for i in top_indices]
+            retrieved_docs_ids = [doc_ids[i] for i in top_indices]
+            context_sources.extend([f"本地文档-{doc_id}" for doc_id in retrieved_docs_ids])
+
+            for i, (doc_id, score) in enumerate(zip(retrieved_docs_ids, scores)):
+                logger.debug(f"  本地文档 ID: {doc_id}, Score: {score:.4f}")
+        else:
+            logger.warning("本地检索未找到相关文档")
+
+        # 如果启用Google搜索且（本地没有结果或使用Google后备）
+        if self.enable_google_search and (len(top_indices) == 0 or use_google_fallback):
+            logger.info("执行Google搜索补充信息...")
+            google_results = await self.google_search_async(query)
+            
+            for result in google_results:
+                if result.get('contents') and len(result['contents'].strip()) > 50:
+                    # 构建Google搜索结果的文档内容
+                    google_doc = f"标题: {result.get('title', '无标题')}\n内容: {result['contents']}"
+                    retrieved_docs_content.append(google_doc)
+                    retrieved_docs_ids.append(f"google-{result.get('url', 'unknown')}")
+                    context_sources.append(f"Google搜索-{result.get('title', '未知标题')}")
+
+        if len(retrieved_docs_content) == 0:
+            logger.warning("本地检索和Google搜索都未找到相关信息")
             return "抱歉，未找到相关信息。", [], []
-
-        retrieved_docs_content = [documents[i] for i in top_indices]
-        retrieved_docs_ids = [doc_ids[i] for i in top_indices]
-
-        for i, (doc_id, score) in enumerate(zip(retrieved_docs_ids, scores)):
-            logger.debug(f"  Doc ID: {doc_id}, Score: {score:.4f}")
 
         # 处理文档截断
         max_doc_length = 2000  # 限制每个文档的最大字符数
@@ -76,7 +138,8 @@ class RAGQuerySystem:
 
         # 构建上下文和消息
         context = "\n\n".join(
-            [f"文档{i + 1}: {doc}" for i, doc in enumerate(truncated_docs)]
+            [f"文档{i + 1} ({context_sources[i] if i < len(context_sources) else '未知来源'}): {doc}" 
+             for i, doc in enumerate(truncated_docs)]
         )
         prompt = PROMPT_TEMPLATE.format(context=context, query=query)
 
@@ -90,6 +153,7 @@ class RAGQuerySystem:
         ]
 
         logger.debug(f"Context length: {len(context)} characters")
+        logger.debug(f"使用了{len(retrieved_docs_content)}个文档，其中Google搜索结果: {len([s for s in context_sources if 'Google' in s])}个")
 
         # 异步生成答案
         try:
@@ -110,18 +174,34 @@ class RAGQuerySystem:
 
         except Exception as e:
             logger.error(f"Error during API call: {e}")
-            return "抱歉，生成答案时遇到问题。", retrieved_docs_ids, retrieved_docs_content
+            return (
+                "抱歉，生成答案时遇到问题。",
+                retrieved_docs_ids,
+                retrieved_docs_content,
+            )
 
     async def save_results_async(self, results, filename):
         """异步保存测试结果到JSON文件"""
         async with aiofiles.open(filename, "w", encoding="utf-8") as f:
             await f.write(json.dumps(results, ensure_ascii=False, indent=2))
 
-    async def run_batch_test(self, test_queries, retrieval_system, documents, doc_ids, 
-                           max_concurrent=50, top_k=5, retrieval_method="hybrid", 
-                           bm25_weight=0.5, dense_weight=0.5):
-        """批量运行RAG测试查询"""
+    async def run_batch_test(
+        self,
+        test_queries,
+        retrieval_system,
+        documents,
+        doc_ids,
+        max_concurrent=50,
+        top_k=5,
+        retrieval_method="hybrid",
+        bm25_weight=0.5,
+        dense_weight=0.5,
+        use_google_fallback=False,
+    ):
+        """批量运行RAG测试查询，支持Google搜索"""
         logger.info(f"=== Running batch test on {len(test_queries)} queries ===")
+        if self.enable_google_search:
+            logger.info(f"Google搜索已启用，后备模式: {use_google_fallback}")
 
         async def process_single_query(i, query_data):
             query, expected_answer, reference = query_data
@@ -130,8 +210,15 @@ class RAGQuerySystem:
             logger.debug(f"Expected: {expected_answer}")
 
             generated_answer, retrieved_ids, retrieved_contents = await self.rag_query(
-                query, retrieval_system, documents, doc_ids, top_k, 
-                retrieval_method, bm25_weight, dense_weight
+                query,
+                retrieval_system,
+                documents,
+                doc_ids,
+                top_k,
+                retrieval_method,
+                bm25_weight,
+                dense_weight,
+                use_google_fallback,
             )
 
             result = {
@@ -146,6 +233,7 @@ class RAGQuerySystem:
                 "retrieved_docs": retrieved_ids,
                 "retrieved_contents": retrieved_contents,
                 "reference": reference,
+                "used_google": any("google-" in doc_id for doc_id in retrieved_ids),
             }
 
             logger.debug("-" * 50)

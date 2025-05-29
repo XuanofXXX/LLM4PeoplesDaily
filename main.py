@@ -22,11 +22,15 @@ from config import (
     DENSE_WEIGHT,
     CACHE_BASE_DIR,
     MAX_CONCURRENT,
+    ENABLE_GOOGLE_SEARCH,
+    GOOGLE_SEARCH_TOPK,
+    USE_GOOGLE_FALLBACK,
 )
 
 # 初始化时间戳和logger
 CUR_TIME = datetime.now().strftime("%Y%m%d_%H%M%S")
 logger = setup_logger(CUR_TIME)
+
 
 async def main():
     """主程序异步版本"""
@@ -44,6 +48,9 @@ async def main():
     logger.info(f"DENSE_WEIGHT: {DENSE_WEIGHT}")
     logger.info(f"CACHE_BASE_DIR: {CACHE_BASE_DIR}")
     logger.info(f"MAX_CONCURRENT: {MAX_CONCURRENT}")
+    logger.info(f"ENABLE_GOOGLE_SEARCH: {ENABLE_GOOGLE_SEARCH}")
+    logger.info(f"GOOGLE_SEARCH_TOPK: {GOOGLE_SEARCH_TOPK}")
+    logger.info(f"USE_GOOGLE_FALLBACK: {USE_GOOGLE_FALLBACK}")
     logger.info("=" * 40)
 
     # 1. 加载数据
@@ -54,9 +61,11 @@ async def main():
 
     # 2. 初始化缓存管理器
     cache_manager = CacheManager(CACHE_BASE_DIR)
-    
+
     # 获取缓存目录和路径
-    cache_result = cache_manager.get_cache_dir(JSONL_FILE_PATH, RETRIEVAL_METHOD, DENSE_MODEL_NAME)
+    cache_result = cache_manager.get_cache_dir(
+        JSONL_FILE_PATH, RETRIEVAL_METHOD, DENSE_MODEL_NAME
+    )
     if cache_result:
         cache_dir, file_hash = cache_result
         cache_paths = cache_manager.get_cache_paths(cache_dir)
@@ -77,7 +86,7 @@ async def main():
 
     # 3. 初始化检索系统
     retrieval_system = RetrievalSystem(DENSE_MODEL_NAME)
-    
+
     # 构建检索索引
     logger.info(f"Building retrieval indices with method: {RETRIEVAL_METHOD}")
 
@@ -104,9 +113,15 @@ async def main():
         )
         cache_manager.cleanup_old_caches()
 
-    # 5. 初始化RAG查询系统
+    # 5. 初始化RAG查询系统（增加Google搜索支持）
     try:
-        rag_system = RAGQuerySystem(VLLM_API_BASE, MODEL_NAME, MAX_NEW_TOKENS)
+        rag_system = RAGQuerySystem(
+            VLLM_API_BASE,
+            MODEL_NAME,
+            MAX_NEW_TOKENS,
+            enable_google_search=ENABLE_GOOGLE_SEARCH,
+            google_search_topk=GOOGLE_SEARCH_TOPK,
+        )
         rag_system.setup_client()
     except Exception as e:
         logger.error(f"Error setting up RAG system: {e}")
@@ -117,29 +132,73 @@ async def main():
     test_queries = load_test_queries(EXAMPLE_ANS_PATH)
 
     if test_queries:
-        # 运行批量测试
+        # 运行批量测试（增加Google搜索参数）
         test_results = await rag_system.run_batch_test(
-            test_queries, retrieval_system, documents, doc_ids,
-            MAX_CONCURRENT, TOP_K_DOCUMENTS, RETRIEVAL_METHOD, BM25_WEIGHT, DENSE_WEIGHT
+            test_queries,
+            retrieval_system,
+            documents,
+            doc_ids,
+            MAX_CONCURRENT,
+            TOP_K_DOCUMENTS,
+            RETRIEVAL_METHOD,
+            BM25_WEIGHT,
+            DENSE_WEIGHT,
+            use_google_fallback=USE_GOOGLE_FALLBACK,
         )
 
         # 保存测试结果
-        result_filename = f"result/test_results_{RETRIEVAL_METHOD}_{CUR_TIME}.json"
+        google_suffix = "_with_google" if ENABLE_GOOGLE_SEARCH else ""
+        result_filename = (
+            f"result/test_results_{RETRIEVAL_METHOD}{google_suffix}_{CUR_TIME}.json"
+        )
+        pred = [result["generated_answer"] for result in test_results]
+        ans = [result["expected_answer"] for result in test_results]
+        accuracy = cal_em(pred, ans)
+        test_results.insert(
+            0,
+            {
+                "retrieval_method": RETRIEVAL_METHOD,
+                "DENSE_WEIGHT": DENSE_WEIGHT,
+                "BM25_WEIGHT": BM25_WEIGHT,
+                "top_k_documents": TOP_K_DOCUMENTS,
+                "ENABLE_GOOGLE_SEARCH": ENABLE_GOOGLE_SEARCH,
+                "GOOGLE_SEARCH_TOPK": GOOGLE_SEARCH_TOPK,
+                "USE_GOOGLE_FALLBACK": USE_GOOGLE_FALLBACK,
+                "accuracy": accuracy,
+            },
+        )
         await rag_system.save_results_async(test_results, result_filename)
         logger.info(f"Test results saved to {result_filename}")
 
-        # 计算准确率
-        pred = [result["generated_answer"] for result in test_results]
-        ans = [result["expected_answer"] for result in test_results]
-        logger.info(f"Accuracy with {RETRIEVAL_METHOD} retrieval: {cal_em(pred, ans):.4f}")
+        if ENABLE_GOOGLE_SEARCH:
+            google_used_count = sum(
+                1 for result in test_results if result.get("used_google", False)
+            )
+            logger.info(f"Google搜索使用次数: {google_used_count}/{len(test_results)}")
+
+        logger.info(
+            f"Accuracy with {RETRIEVAL_METHOD} retrieval{google_suffix}: {accuracy:.4f}"
+        )
     else:
         logger.info("No test queries found, running example query...")
         test_query = "2024年3月18日,习近平总书记在湖南考察期间第一站来到了哪所学校？"
-        generated_answer, retrieved_ids, retrieved_contents = await rag_system.rag_query(
-            test_query, retrieval_system, documents, doc_ids, TOP_K_DOCUMENTS,
-            RETRIEVAL_METHOD, BM25_WEIGHT, DENSE_WEIGHT
+        (
+            generated_answer,
+            retrieved_ids,
+            retrieved_contents,
+        ) = await rag_system.rag_query(
+            test_query,
+            retrieval_system,
+            documents,
+            doc_ids,
+            TOP_K_DOCUMENTS,
+            RETRIEVAL_METHOD,
+            BM25_WEIGHT,
+            DENSE_WEIGHT,
+            USE_GOOGLE_FALLBACK,
         )
         logger.info(f"Generated answer: {generated_answer}")
+
 
 if __name__ == "__main__":
     # 运行异步主程序
