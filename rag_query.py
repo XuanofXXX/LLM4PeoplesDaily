@@ -1,3 +1,4 @@
+import re
 import asyncio
 import json
 import aiofiles
@@ -11,17 +12,38 @@ logger = logging.getLogger("rag_system")
 
 PROMPT_TEMPLATE = """
 ## 指令
-你是一个基于检索的问答助手。请根据以下提供的上下文信息来回答问题。如果上下文信息不足以回答问题，请说明你无法从提供的信息中找到答案。请直接回答问题所提问的人名、地名、主题等等，不要任何多余的话。如果答案是多个人或多个单位，请用分号（；）分隔。
+你是一个基于检索的问答助手。请根据以下提供的上下文信息来回答问题。
+
+请按照以下格式回答：
+1. 首先在"## 思考"部分分析上下文信息，整理相关内容
+2. 然后在"## Answer"部分给出最终答案
+
+要求：
+- 如果上下文信息不足以回答问题，请在Answer部分说明你无法从提供的信息中找到答案
+- Answer部分请直接回答问题所提问的人名、地名、主题等等，不要任何多余的话
+- 如果答案是多个人或多个单位，请用分号（；）分隔
 
 ## 参考示例
+```
 问题：2024年3月18日,习近平总书记在湖南考察期间第一站来到了哪所学校？
-答案：湖南第一师范学院
 
-问题：2024年是中国红十字会成立多少周年？
-答案：120
+## 思考
+从上下文信息中查找关于2024年3月18日习近平总书记湖南考察的相关内容。文档中提到习近平总书记在湖南考察期间首先来到了湖南第一师范学院，这是他此次考察的第一站。
 
+## Answer
+湖南第一师范学院
+```
+
+---
+```
 问题：哪些单位在中国期刊高质量发展论坛的主论坛上做主题演讲？
-答案：中国科协科技创新部；湖南省委宣传部；上海大学；《历史研究》；《读者》；《分子植物》；《问天少年》；南方杂志社；中华医学会杂志社大学。
+
+## 思考
+需要从上下文中找到中国期刊高质量发展论坛主论坛的演讲单位信息。根据文档内容，参与主题演讲的单位包括多个机构和期刊社，包含中国科协科技创新部，湖南省委宣传部，上海大学，《历史研究》，《读者》，《分子植物》，《问天少年》，南方杂志社，中华医学会杂志社。
+
+## Answer
+中国科协科技创新部；湖南省委宣传部；上海大学；《历史研究》；《读者》；《分子植物》；《问天少年》；南方杂志社；中华医学会杂志社
+```
 
 ## 上下文信息
 {context}
@@ -31,18 +53,55 @@ PROMPT_TEMPLATE = """
 """.strip()
 
 
+def extract_answer_from_response(response_text):
+    """从LLM响应中提取最终答案"""
+    try:
+        # 查找 ## Answer 部分
+        answer_pattern = r"##\s*Answer\s*\n(.*?)(?=\n##|\Z)"
+        match = re.search(answer_pattern, response_text, re.DOTALL | re.IGNORECASE)
+
+        if match:
+            answer = match.group(1).strip()
+            logger.debug(f"提取到的答案: {answer}")
+            return answer
+        else:
+            # 如果没有找到 ## Answer 格式，尝试查找答案：格式
+            answer_pattern2 = r"答案[：:]\s*(.*?)(?=\n|$)"
+            match2 = re.search(answer_pattern2, response_text, re.IGNORECASE)
+            if match2:
+                answer = match2.group(1).strip()
+                logger.debug(f"备用格式提取到的答案: {answer}")
+                return answer
+            else:
+                # 如果都没找到，返回原始响应
+                logger.warning("未能从响应中提取到标准格式的答案，返回原始响应")
+                return response_text.strip()
+    except Exception as e:
+        logger.error(f"答案提取出错: {e}")
+        return response_text.strip()
+
+
 class RAGQuerySystem:
-    def __init__(self, api_base, model_name, max_new_tokens=512, enable_google_search=False, google_search_topk=3):
+    def __init__(
+        self,
+        api_base,
+        model_name,
+        max_new_tokens=512,
+        enable_google_search=False,
+        google_search_topk=3,
+    ):
         self.api_base = api_base
         self.model_name = model_name
         self.max_new_tokens = max_new_tokens
         self.enable_google_search = enable_google_search
         self.google_search_topk = google_search_topk
         self.client = None
-        
+
         # 初始化Google搜索器
         if self.enable_google_search:
-            self.google_searcher = GoogleSearcher(topk=self.google_search_topk, sleep_interval=1.0)
+            self.google_searcher = GoogleSearcher(
+                topk=self.google_search_topk, sleep_interval=1.0
+            )
             logger.info(f"Google搜索已启用，返回Top-{self.google_search_topk}结果")
         else:
             self.google_searcher = None
@@ -63,11 +122,13 @@ class RAGQuerySystem:
         """异步执行Google搜索"""
         if not self.google_searcher:
             return []
-        
+
         try:
             logger.info(f"执行Google搜索: {query}")
             # 使用异步搜索方法
-            search_results = await self.google_searcher.asearch(query, self.google_search_topk)
+            search_results = await self.google_searcher.asearch(
+                query, self.google_search_topk
+            )
             logger.info(f"Google搜索返回{len(search_results)}个结果")
             return search_results
         except Exception as e:
@@ -103,7 +164,9 @@ class RAGQuerySystem:
         if len(top_indices) > 0:
             retrieved_docs_content = [documents[i] for i in top_indices]
             retrieved_docs_ids = [doc_ids[i] for i in top_indices]
-            context_sources.extend([f"本地文档-{doc_id}" for doc_id in retrieved_docs_ids])
+            context_sources.extend(
+                [f"本地文档-{doc_id}" for doc_id in retrieved_docs_ids]
+            )
 
             for i, (doc_id, score) in enumerate(zip(retrieved_docs_ids, scores)):
                 logger.debug(f"  本地文档 ID: {doc_id}, Score: {score:.4f}")
@@ -114,32 +177,36 @@ class RAGQuerySystem:
         if self.enable_google_search and (len(top_indices) == 0 or use_google_fallback):
             logger.info("执行Google搜索补充信息...")
             google_results = await self.google_search_async(query)
-            
+
             for result in google_results:
-                if result.get('contents') and len(result['contents'].strip()) > 50:
+                if result.get("contents") and len(result["contents"].strip()) > 50:
                     # 构建Google搜索结果的文档内容
                     google_doc = f"标题: {result.get('title', '无标题')}\n内容: {result['contents']}"
                     retrieved_docs_content.append(google_doc)
                     retrieved_docs_ids.append(f"google-{result.get('url', 'unknown')}")
-                    context_sources.append(f"Google搜索-{result.get('title', '未知标题')}")
+                    context_sources.append(
+                        f"Google搜索-{result.get('title', '未知标题')}"
+                    )
 
         if len(retrieved_docs_content) == 0:
             logger.warning("本地检索和Google搜索都未找到相关信息")
             return "抱歉，未找到相关信息。", [], []
 
         # 处理文档截断
-        max_doc_length = 2000  # 限制每个文档的最大字符数
+        max_doc_length = 3000  # 限制每个文档的最大字符数
         truncated_docs = []
         for doc in retrieved_docs_content:
             if len(doc) > max_doc_length:
-                truncated_docs.append(doc[:max_doc_length] + "...")
+                truncated_docs.append(doc[:max_doc_length//2] + "..." + doc[-max_doc_length//2:])
             else:
                 truncated_docs.append(doc)
 
         # 构建上下文和消息
         context = "\n\n".join(
-            [f"文档{i + 1} ({context_sources[i] if i < len(context_sources) else '未知来源'}): {doc}" 
-             for i, doc in enumerate(truncated_docs)]
+            [
+                f"文档{i + 1} ({context_sources[i] if i < len(context_sources) else '未知来源'}): {doc}"
+                for i, doc in enumerate(truncated_docs)
+            ]
         )
         prompt = PROMPT_TEMPLATE.format(context=context, query=query)
 
@@ -147,13 +214,15 @@ class RAGQuerySystem:
         messages = [
             {
                 "role": "system",
-                "content": "你是一个基于检索的问答助手。请根据以下提供的上下文信息来回答问题。如果上下文信息不足以回答问题，请说明你无法从提供的信息中找到答案。请用最简洁准确的语言回答问题。",
+                "content": "你是一个基于检索的问答助手。请严格按照用户要求的格式回答，先进行思考分析，然后给出最终答案。",
             },
             {"role": "user", "content": prompt},
         ]
 
         logger.debug(f"Context length: {len(context)} characters")
-        logger.debug(f"使用了{len(retrieved_docs_content)}个文档，其中Google搜索结果: {len([s for s in context_sources if 'Google' in s])}个")
+        logger.debug(
+            f"使用了{len(retrieved_docs_content)}个文档，其中Google搜索结果: {len([s for s in context_sources if 'Google' in s])}个"
+        )
 
         # 异步生成答案
         try:
@@ -166,11 +235,16 @@ class RAGQuerySystem:
                 stop=None,
             )
 
-            answer = response.choices[0].message.content.strip()
+            raw_response = response.choices[0].message.content.strip()
+            logger.debug("LLM Raw Response:")
+            logger.debug(raw_response)
 
-            logger.debug("LLM Answer:")
-            logger.debug(answer)
-            return answer, retrieved_docs_ids, retrieved_docs_content
+            # 提取最终答案
+            final_answer = extract_answer_from_response(raw_response)
+
+            logger.debug("Final Answer:")
+            logger.debug(final_answer)
+            return final_answer, retrieved_docs_ids, retrieved_docs_content
 
         except Exception as e:
             logger.error(f"Error during API call: {e}")

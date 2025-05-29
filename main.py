@@ -7,6 +7,7 @@ from data_loader import load_documents_from_jsonl, load_test_queries
 from retrieval import RetrievalSystem
 from rag_query import RAGQuerySystem
 from utils import cal_em
+import pytz
 
 # 导入配置
 from config import (
@@ -28,7 +29,7 @@ from config import (
 )
 
 # 初始化时间戳和logger
-CUR_TIME = datetime.now().strftime("%Y%m%d_%H%M%S")
+CUR_TIME = datetime.now(pytz.timezone("Asia/Shanghai")).strftime("%Y%m%d_%H%M%S")
 logger = setup_logger(CUR_TIME)
 
 
@@ -111,7 +112,7 @@ async def main():
         cache_manager.save_cache_info(
             cache_dir, file_hash, RETRIEVAL_METHOD, DENSE_MODEL_NAME, JSONL_FILE_PATH
         )
-        cache_manager.cleanup_old_caches()
+        # cache_manager.cleanup_old_caches()
 
     # 5. 初始化RAG查询系统（增加Google搜索支持）
     try:
