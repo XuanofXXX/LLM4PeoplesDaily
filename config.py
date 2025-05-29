@@ -2,19 +2,20 @@ import os
 
 # 基础RAG配置
 # JSONL_FILE_PATH = "data/llm_processed_meaningful_articles_v3_rag.jsonl"
-JSONL_FILE_PATH = "data/corpus_v3.jsonl" # 重新爬取标签等等
-EXAMPLE_ANS_PATH = "data/eval/official_test_ans.json"
+JSONL_FILE_PATH = os.getenv("JSONL_FILE_PATH", "data/corpus_v3.jsonl")  # 重新爬取标签等等
+# JSONL_FILE_PATH = "data/corpus_v3_20230101_20241231.jsonl" # 重新爬取标签等等
+EXAMPLE_ANS_PATH = os.getenv("EXAMPLE_ANS_PATH", "data/eval/official_test_ans.json")
 # EXAMPLE_ANS_PATH = "data/eval/generated_qa_pairs.jsonl"
-VLLM_API_BASE = "http://localhost:8000/v1"
-MODEL_NAME = "/media/public/models/huggingface/Qwen/Qwen2.5-7B-Instruct"
-MAX_NEW_TOKENS = 500
+VLLM_API_BASE = os.getenv("VLLM_API_BASE", "http://localhost:8000/v1")
+MODEL_NAME = os.getenv("MODEL_NAME", "/media/public/models/huggingface/Qwen/Qwen2.5-7B-Instruct")
+MAX_NEW_TOKENS = int(os.getenv("MAX_NEW_TOKENS", "500"))
 
 # 检索配置
-TOP_K_DOCUMENTS = 5
-DENSE_MODEL_NAME = "/media/public/models/huggingface/BAAI/bge-large-zh-v1.5"
-RETRIEVAL_METHOD = "hybrid"  # 可选: "bm25", "dense", "hybrid"
-BM25_WEIGHT = 0.3
-DENSE_WEIGHT = 0.7
+TOP_K_DOCUMENTS = int(os.getenv("TOP_K_DOCUMENTS", "5"))
+DENSE_MODEL_NAME = os.getenv("DENSE_MODEL_NAME", "/media/public/models/huggingface/BAAI/bge-large-zh-v1.5")
+RETRIEVAL_METHOD = os.getenv("RETRIEVAL_METHOD", "hybrid")  # 可选: "bm25", "dense", "hybrid"
+BM25_WEIGHT = float(os.getenv("BM25_WEIGHT", "0.5"))
+DENSE_WEIGHT = float(os.getenv("DENSE_WEIGHT", "0.5"))
 
 # 缓存配置
 CACHE_BASE_DIR = "cache"
@@ -23,7 +24,7 @@ CACHE_BASE_DIR = "cache"
 MAX_CONCURRENT = 100
 
 # Google搜索配置
-ENABLE_GOOGLE_SEARCH = os.getenv("ENABLE_GOOGLE_SEARCH", "True").lower() == "true"
+ENABLE_GOOGLE_SEARCH = os.getenv("ENABLE_GOOGLE_SEARCH", "False").lower() == "true"
 GOOGLE_SEARCH_TOPK = int(os.getenv("GOOGLE_SEARCH_TOPK", "3"))
 USE_GOOGLE_FALLBACK = os.getenv("USE_GOOGLE_FALLBACK", "True").lower() == "true"
 
