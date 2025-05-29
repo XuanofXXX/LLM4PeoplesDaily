@@ -12,7 +12,8 @@ wheels/
 .vscode
 
 # data
-rmrb_data
+rmrb_data_old
+rmrb_data/
 *.json
 *.jsonl
 *.[ct]sv

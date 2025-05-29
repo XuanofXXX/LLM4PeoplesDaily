@@ -10,7 +10,7 @@ VLLM_API_KEY = "EMPTY"  # Or your actual API key if required by vLLM
 MODEL_NAME = "/media/public/models/huggingface/Qwen/Qwen2.5-7B-Instruct"  # Or the specific model ID you are using with vLLM
 
 # Input JSONL file
-INPUT_JSONL_FILE = Path("rmrb_data_deduplicate_new.jsonl")
+INPUT_JSONL_FILE = Path("rmrb_data_deduplicate_long_v3.jsonl")
 # Key in the input JSONL that contains the article text
 INPUT_JSONL_CONTENT_KEY = "content"
 # Key in the input JSONL to use as an identifier (e.g., "id", "source_path"). Fallbacks to line number if not found.
@@ -19,7 +19,7 @@ INPUT_JSONL_ID_KEY = (
 )
 
 # Output JSONL file for meaningful articles
-OUTPUT_JSONL_FILE = Path("llm_processed_meaningful_articles.jsonl")
+OUTPUT_JSONL_FILE = Path("llm_processed_meaningful_articles_v3.jsonl")
 
 # Concurrency and Retry Settings
 MAX_CONCURRENT_TASKS = (

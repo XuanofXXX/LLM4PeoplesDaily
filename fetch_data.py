@@ -123,24 +123,94 @@ class RMRBSpider:
         try:
             bsobj = bs4.BeautifulSoup(html, "html.parser")
 
-            # 获取文章 标题
-            h3 = bsobj.h3.text if bsobj.h3 else ""
-            h1 = bsobj.h1.text if bsobj.h1 else ""
-            h2 = bsobj.h2.text if bsobj.h2 else ""
-            title = f"{h3}\n{h1}\n{h2}\n"
+            # 首先尝试查找 div.article 元素
+            article_div = bsobj.find("div", attrs={"class": "article"})
 
-            # 获取文章 内容
-            ozoom = bsobj.find("div", attrs={"id": "ozoom"})
-            if ozoom:
-                pList = ozoom.find_all("p")
-                content = ""
-                for p in pList:
-                    content += p.text + "\n"
+            if article_div:
+                # 提取标题信息
+                h3 = article_div.find("h3")
+                h1 = article_div.find("h1")
+                h2 = article_div.find("h2")
+
+                title_parts = []
+                if h3 and h3.text.strip():
+                    title_parts.append(h3.text.strip())
+                if h1 and h1.text.strip():
+                    title_parts.append(h1.text.strip())
+                if h2 and h2.text.strip():
+                    title_parts.append(h2.text.strip())
+
+                title = "\n".join(title_parts) + "\n" if title_parts else ""
+
+                # 提取日期信息
+                date_span = article_div.find("span", attrs={"class": "date"})
+                date_info = (
+                    date_span.text.strip() + "\n"
+                    if date_span and date_span.text.strip()
+                    else ""
+                )
+
+                # 提取作者
+                writer_span = article_div.find("p", attrs={"class": "sec"})
+                writer_info = (
+                    writer_span.text.strip() + "\n"
+                    if writer_span and writer_span.text.strip()
+                    else ""
+                )
+                # 提取图片说明文字（在table中的p标签）
+                image_captions = []
+                tables = article_div.find_all("table")
+                for table in tables:
+                    caption_p = table.find("p")
+                    if caption_p and caption_p.text.strip():
+                        image_captions.append(caption_p.text.strip())
+
+                image_caption_text = (
+                    "\n".join(image_captions) + "\n" if image_captions else ""
+                )
+
+                # 提取正文内容（在ozoom div中的p标签）
+                content_parts = []
+                ozoom = article_div.find("div", attrs={"id": "ozoom"})
+                if ozoom:
+                    # 查找所有p标签，排除在table内的p标签（那些是图片说明）
+                    p_tags = ozoom.find_all("p")
+                    for p in p_tags:
+                        # 检查p标签是否在table内
+                        if not p.find_parent("table"):
+                            text = p.text.strip()
+                            if text:
+                                content_parts.append(text)
+
+                main_content = "\n".join(content_parts) if content_parts else ""
+
+                # 组合所有内容
+                full_content = (
+                    title + writer_info + date_info + image_caption_text + main_content
+                )
+                return full_content.strip()
+
             else:
-                content = ""
+                # 如果没有找到div.article，回退到原来的逻辑
+                # 获取文章 标题
+                h3 = bsobj.h3.text if bsobj.h3 else ""
+                h1 = bsobj.h1.text if bsobj.h1 else ""
+                h2 = bsobj.h2.text if bsobj.h2 else ""
+                title = f"{h3}\n{h1}\n{h2}\n"
 
-            # 返回结果 标题+内容
-            return title + content
+                # 获取文章 内容
+                ozoom = bsobj.find("div", attrs={"id": "ozoom"})
+                if ozoom:
+                    pList = ozoom.find_all("p")
+                    content = ""
+                    for p in pList:
+                        content += p.text + "\n"
+                else:
+                    content = ""
+
+                # 返回结果 标题+内容
+                return title + content
+
         except Exception as e:
             print(f"解析内容失败: {e}")
             return ""
@@ -297,9 +367,12 @@ def get_date_list(begin_date: str, end_date: str):
 async def main():
     # 输入起止日期，爬取之间的新闻
     print("欢迎使用异步人民日报爬虫，请输入以下信息：")
-    begin_date = input("请输入开始日期(YYYYMMDD):") or '20220101'
-    end_date = input("请输入结束日期(YYYYMMDD):") or '20241231'
-    destdir = input("请输入数据保存的地址：") or "rmrb_data/"
+    # begin_date = input("请输入开始日期(YYYYMMDD):") or '20220101'
+    # end_date = input("请输入结束日期(YYYYMMDD):") or '20241231'
+    # destdir = input("请输入数据保存的地址：") or "/data/rmrb_data/"
+    begin_date = '20220101'
+    end_date = '20241231'
+    destdir = 'data/rmrb_data/'
 
     spider = RMRBSpider(max_concurrent_requests=10)
     await spider.download_rmrb_range(begin_date, end_date, destdir)
