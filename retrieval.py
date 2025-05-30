@@ -1,4 +1,5 @@
 import os
+import torch
 import pickle
 import numpy as np
 from rank_bm25 import BM25Okapi
@@ -16,6 +17,7 @@ class RetrievalSystem:
         self.dense_model = None
         self.bm25_index = None
         self.document_embeddings = None
+        self.device = "cuda" if torch.cuda.is_available() else "cpu"
 
     def setup_dense_model(self):
         """设置dense retrieval模型"""
@@ -24,7 +26,9 @@ class RetrievalSystem:
 
         logger.info(f"Loading dense retrieval model: {self.dense_model_name}")
         try:
-            self.dense_model = SentenceTransformer(self.dense_model_name)
+            self.dense_model = SentenceTransformer(
+                self.dense_model_name, device=self.device
+            )
             logger.info("Dense retrieval model loaded successfully.")
             return self.dense_model
         except Exception as e:
