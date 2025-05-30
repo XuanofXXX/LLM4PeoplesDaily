@@ -1,3 +1,4 @@
+import json
 import asyncio
 from datetime import datetime
 
@@ -34,9 +35,11 @@ CUR_TIME = datetime.now(pytz.timezone("Asia/Shanghai")).strftime("%Y%m%d_%H%M%S"
 logger = setup_logger(CUR_TIME)
 
 
-async def main():
+async def main(test_file_path=None):
     """主程序异步版本"""
+    global EXAMPLE_ANS_PATH
     # 记录当前配置到日志
+    EXAMPLE_ANS_PATH = test_file_path or EXAMPLE_ANS_PATH
     logger.info("=== RAG System Configuration ===")
     logger.info(f"JSONL_FILE_PATH: {JSONL_FILE_PATH}")
     logger.info(f"EXAMPLE_ANS_PATH: {EXAMPLE_ANS_PATH}")
@@ -69,7 +72,7 @@ async def main():
     cache_result = cache_manager.get_cache_dir(
         JSONL_FILE_PATH, RETRIEVAL_METHOD, DENSE_MODEL_NAME
     )
-    logger.info(f'Cache result: {cache_result}')
+    logger.info(f"Cache result: {cache_result}")
     if cache_result:
         cache_dir, file_hash = cache_result
         cache_paths = cache_manager.get_cache_paths(cache_dir)
@@ -171,7 +174,7 @@ async def main():
                 "USE_GOOGLE_FALLBACK": USE_GOOGLE_FALLBACK,
                 "accuracy": accuracy,
                 "input_file": JSONL_FILE_PATH,
-                "example_ans_path": EXAMPLE_ANS_PATH
+                "example_ans_path": EXAMPLE_ANS_PATH,
             },
         )
         await rag_system.save_results_async(test_results, result_filename)
@@ -205,8 +208,37 @@ async def main():
             USE_GOOGLE_FALLBACK,
         )
         logger.info(f"Generated answer: {generated_answer}")
+    return test_results
+
+
+def evaluate(queries):
+    """
+    评估函数，模拟处理查询并返回答案
+    """
+    qs = [{"question": q, "answer": "", "reference": ""} for q in queries]
+    final_path = "/home/xiachunxuan/nlp-homework/data/eval/final_test.json"
+    with open(final_path, "w") as f:
+        json.dump(qs, f, ensure_ascii=False, indent=4)
+    result = asyncio.run(main(final_path))
+    qa_map = {}
+    print(result[0])
+    for r in result:
+        if 'query' not in r:
+            continue
+        question = r["query"]
+        answer = r["generated_answer"]
+        qa_map[question] = answer
+    print(qa_map)
+    return [qa_map[query] for query in queries]
 
 
 if __name__ == "__main__":
     # 运行异步主程序
-    asyncio.run(main())
+    # result = asyncio.run(main())
+    # print(result)
+    test_queries = [
+        '2024年3月18日,习近平总书记在湖南考察期间第一站来到了哪所学校?',
+        "中国第一大贸易伙伴是？",
+        "《共建“一带一路”：构建人类命运共同体的重大实践》白皮书什么时候发布？",
+    ]
+    evaluate(test_queries)
