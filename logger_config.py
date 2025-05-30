@@ -9,7 +9,7 @@ def setup_logger(cur_time=None):
         
     # 创建logger
     logger = logging.getLogger("rag_system")
-    logger.setLevel(logging.INFO)
+    logger.setLevel(logging.DEBUG)
 
     # 如果logger已经有handler，则清除（避免重复添加）
     if logger.handlers:
@@ -24,7 +24,7 @@ def setup_logger(cur_time=None):
     log_filename = f"logs/rag_system_{cur_time}.log"
     os.makedirs(os.path.dirname(log_filename), exist_ok=True)  # 确保日志目录存在
     file_handler = logging.FileHandler(log_filename, encoding="utf-8")
-    file_handler.setLevel(logging.INFO)
+    file_handler.setLevel(logging.DEBUG)
     file_handler.setFormatter(formatter)
 
     # 创建终端handler
