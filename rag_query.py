@@ -54,7 +54,7 @@ PROMPT_TEMPLATE = """
 
 
 def extract_answer_from_response(response_text):
-    """从LLM响应中提取最终答案"""
+    """从LLM响应中提取最终答案，返回(答案, 是否成功提取)"""
     try:
         # 查找 ## Answer 部分
         answer_pattern = r"##\s*Answer\s*\n(.*?)(?=\n##|\Z)"
@@ -63,7 +63,7 @@ def extract_answer_from_response(response_text):
         if match:
             answer = match.group(1).strip()
             logger.debug(f"提取到的答案: {answer}")
-            return answer
+            return answer, True
         else:
             # 如果没有找到 ## Answer 格式，尝试查找答案：格式
             answer_pattern2 = r"答案[：:]\s*(.*?)(?=\n|$)"
@@ -71,14 +71,14 @@ def extract_answer_from_response(response_text):
             if match2:
                 answer = match2.group(1).strip()
                 logger.debug(f"备用格式提取到的答案: {answer}")
-                return answer
+                return answer, True
             else:
                 # 如果都没找到，返回原始响应
-                logger.warning("未能从响应中提取到标准格式的答案，返回原始响应")
-                return response_text.strip()
+                logger.warning("未能从响应中提取到标准格式的答案，将重新生成")
+                return response_text.strip(), False
     except Exception as e:
         logger.error(f"答案提取出错: {e}")
-        return response_text.strip()
+        return response_text.strip(), False
 
 
 class RAGQuerySystem:
@@ -134,6 +134,62 @@ class RAGQuerySystem:
         except Exception as e:
             logger.error(f"Google搜索出错: {e}")
             return []
+
+    async def generate_answer_with_retry(self, messages, max_retries=1):
+        """生成答案，如果格式不正确则重试"""
+        # 第一次尝试，使用温度0
+        try:
+            response = await self.client.chat.completions.create(
+                model=self.model_name,
+                messages=messages,
+                max_tokens=self.max_new_tokens,
+                temperature=0,
+                top_p=0.8,
+                stop=None,
+            )
+
+            raw_response = response.choices[0].message.content.strip()
+            logger.debug("LLM Raw Response (第一次尝试):")
+            logger.debug(raw_response)
+
+            # 提取最终答案
+            final_answer, extraction_success = extract_answer_from_response(raw_response)
+            
+            if extraction_success:
+                logger.debug("首次生成成功提取答案")
+                return final_answer
+            
+            # 如果提取失败，尝试重新生成
+            logger.info("首次生成格式不正确，使用非零温度重新生成...")
+            
+            for retry_count in range(max_retries):
+                logger.info(f"重试生成 {retry_count + 1}/{max_retries}")
+                retry_response = await self.client.chat.completions.create(
+                    model=self.model_name,
+                    messages=messages,
+                    max_tokens=self.max_new_tokens,
+                    temperature=0.3,  # 使用非零温度
+                    top_p=0.8,
+                    stop=None,
+                )
+                
+                retry_raw_response = retry_response.choices[0].message.content.strip()
+                logger.debug(f"LLM Raw Response (重试 {retry_count + 1}):")
+                logger.debug(retry_raw_response)
+                
+                retry_answer, retry_extraction_success = extract_answer_from_response(retry_raw_response)
+                
+                if retry_extraction_success:
+                    logger.info(f"重试 {retry_count + 1} 成功提取答案")
+                    return retry_answer
+            
+            # 所有重试都失败，返回最后一次的结果
+            logger.warning("所有重试都未能提取到标准格式答案，返回最后一次结果")
+            return final_answer
+
+        except Exception as e:
+            logger.error(f"Error during API call: {e}")
+            return "抱歉，生成答案时遇到问题。"
 
     async def rag_query(
         self,
@@ -226,21 +282,8 @@ class RAGQuerySystem:
 
         # 异步生成答案
         try:
-            response = await self.client.chat.completions.create(
-                model=self.model_name,
-                messages=messages,
-                max_tokens=self.max_new_tokens,
-                temperature=0,
-                top_p=0.8,
-                stop=None,
-            )
-
-            raw_response = response.choices[0].message.content.strip()
-            logger.debug("LLM Raw Response:")
-            logger.debug(raw_response)
-
-            # 提取最终答案
-            final_answer = extract_answer_from_response(raw_response)
+            # 使用带重试的生成方法
+            final_answer = await self.generate_answer_with_retry(messages)
 
             logger.debug("Final Answer:")
             logger.debug(final_answer)
