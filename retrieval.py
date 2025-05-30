@@ -7,6 +7,8 @@ from sentence_transformers import SentenceTransformer
 from sklearn.metrics.pairwise import cosine_similarity
 from data_loader import chinese_tokenizer
 import logging
+import concurrent.futures
+import threading
 
 logger = logging.getLogger("rag_system")
 
@@ -18,6 +20,9 @@ class RetrievalSystem:
         self.bm25_index = None
         self.document_embeddings = None
         self.device = "cuda" if torch.cuda.is_available() else "cpu"
+        # 添加线程锁以确保线程安全
+        self._bm25_lock = threading.Lock()
+        self._dense_lock = threading.Lock()
 
     def setup_dense_model(self):
         """设置dense retrieval模型"""
@@ -111,29 +116,31 @@ class RetrievalSystem:
         return self.bm25_index
 
     def bm25_retrieve(self, query, top_k):
-        """使用BM25检索"""
+        """使用BM25检索（线程安全版本）"""
         if not self.bm25_index:
             logger.error("BM25 index not built")
             return np.array([]), np.array([])
 
-        tokenized_query = chinese_tokenizer(query)
-        doc_scores = self.bm25_index.get_scores(tokenized_query)
-        top_indices = np.argsort(doc_scores)[::-1][:top_k]
-        return top_indices, doc_scores[top_indices]
+        with self._bm25_lock:
+            tokenized_query = chinese_tokenizer(query)
+            doc_scores = self.bm25_index.get_scores(tokenized_query)
+            top_indices = np.argsort(doc_scores)[::-1][:top_k]
+            return top_indices, doc_scores[top_indices]
 
     def dense_retrieve(self, query, top_k):
-        """使用dense retrieval检索"""
+        """使用dense retrieval检索（线程安全版本）"""
         if not self.dense_model or self.document_embeddings is None:
             logger.error("Dense model or embeddings not available")
             return np.array([]), np.array([])
 
-        query_embedding = self.dense_model.encode([query])
-        similarities = cosine_similarity(query_embedding, self.document_embeddings)[0]
-        top_indices = np.argsort(similarities)[::-1][:top_k]
-        return top_indices, similarities[top_indices]
+        with self._dense_lock:
+            query_embedding = self.dense_model.encode([query])
+            similarities = cosine_similarity(query_embedding, self.document_embeddings)[0]
+            top_indices = np.argsort(similarities)[::-1][:top_k]
+            return top_indices, similarities[top_indices]
 
     def hybrid_retrieve(self, query, top_k, bm25_weight=0.5, dense_weight=0.5):
-        """混合检索策略"""
+        """混合检索策略（并行版本）"""
         if (
             not self.bm25_index
             or not self.dense_model
@@ -152,11 +159,16 @@ class RetrievalSystem:
         # 获取更多的候选文档用于重排序
         candidate_k = min(top_k * 3, len(self.document_embeddings))
 
-        # BM25检索
-        bm25_indices, bm25_scores = self.bm25_retrieve(query, candidate_k)
+        # 并行执行BM25和Dense检索
+        with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
+            # 提交BM25检索任务
+            bm25_future = executor.submit(self.bm25_retrieve, query, candidate_k)
+            # 提交Dense检索任务
+            dense_future = executor.submit(self.dense_retrieve, query, candidate_k)
 
-        # Dense检索
-        dense_indices, dense_scores = self.dense_retrieve(query, candidate_k)
+            # 等待两个任务完成
+            bm25_indices, bm25_scores = bm25_future.result()
+            dense_indices, dense_scores = dense_future.result()
 
         # 归一化分数
         bm25_scores_norm = (bm25_scores - bm25_scores.min()) / (
