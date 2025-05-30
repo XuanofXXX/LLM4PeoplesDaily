@@ -10,6 +10,7 @@ from google import GoogleSearcher
 
 logger = logging.getLogger("rag_system")
 
+# 原始的简单问答题prompt模板
 PROMPT_TEMPLATE = """
 ## 指令
 你是一个基于检索的问答助手。请根据以下提供的上下文信息来回答问题。
@@ -44,6 +45,54 @@ PROMPT_TEMPLATE = """
 
 ## 答案
 中国科协科技创新部；湖南省委宣传部；上海大学；《历史研究》；《读者》；《分子植物》；《问天少年》；南方杂志社；中华医学会杂志社
+```
+
+## 上下文信息
+{context}
+
+## 问题
+{query}
+""".strip()
+
+# 开放题的prompt模板
+OPEN_QUESTION_PROMPT_TEMPLATE = """
+## 指令
+你是一个基于检索的问答助手。请根据以下提供的上下文信息来回答开放性问题。
+
+请按照以下格式回答：
+1. 首先在"## 思考"部分分析上下文信息，整理相关内容
+2. 然后在"## 答案"部分给出详细的回答
+
+要求：
+- 这是一个开放性问题，需要综合分析和详细阐述
+- 答案应该结构清晰，分点论述
+- 每个要点都要有具体的事实支撑
+- 可以适当展开分析，但要基于提供的上下文信息
+- 语言表达要准确、流畅、有逻辑性
+
+## 参考示例
+```
+问题：分析一下当前中国在国际合作方面的主要举措和成果？
+
+## 思考
+从上下文信息中整理中国在国际合作方面的相关内容，包括"一带一路"倡议、多边合作机制、对外开放政策等方面的举措和取得的成果。需要从政策制定、具体实施、合作成果等多个维度进行分析。
+
+## 答案
+当前中国在国际合作方面的主要举措和成果可以从以下几个方面来分析：
+
+1. **"一带一路"倡议持续推进**
+   - 与多个国家签署合作协议，推动基础设施互联互通
+   - 在贸易投资、产能合作等领域取得显著成果
+
+2. **多边合作机制不断完善**
+   - 积极参与和推动区域全面经济伙伴关系协定（RCEP）等
+   - 在联合国、G20等国际组织中发挥重要作用
+
+3. **对外开放水平持续提升**
+   - 设立更多自贸试验区，扩大对外开放领域
+   - 举办进博会等大型国际展会，促进国际贸易合作
+
+这些举措体现了中国构建人类命运共同体的理念，为全球发展作出了积极贡献。
 ```
 
 ## 上下文信息
@@ -204,10 +253,11 @@ class RAGQuerySystem:
         bm25_weight=0.5,
         dense_weight=0.5,
         use_google_fallback=False,
+        is_open_question=False,  # 新增参数，标识是否为开放题
     ):
         """执行 RAG 查询，支持Google搜索作为后备"""
         logger.debug(
-            f"Performing RAG query: '{query}' using {retrieval_method} retrieval"
+            f"Performing RAG query: '{query}' using {retrieval_method} retrieval, open_question: {is_open_question}"
         )
 
         # 执行本地检索
@@ -266,7 +316,14 @@ class RAGQuerySystem:
                 for i, doc in enumerate(truncated_docs)
             ]
         )
-        prompt = PROMPT_TEMPLATE.format(context=context, query=query)
+        
+        # 根据问题类型选择prompt模板
+        if is_open_question:
+            prompt = OPEN_QUESTION_PROMPT_TEMPLATE.format(context=context, query=query)
+            logger.debug("使用开放题prompt模板")
+        else:
+            prompt = PROMPT_TEMPLATE.format(context=context, query=query)
+            logger.debug("使用标准问答题prompt模板")
 
         # 使用标准的 OpenAI 消息格式
         messages = [
@@ -324,9 +381,13 @@ class RAGQuerySystem:
 
         async def process_single_query(i, query_data):
             query, expected_answer, reference = query_data
+            # 判断是否为开放题（后20条，即索引80开始）
+            is_open_question = i >= 80
+            
             logger.debug(f"--- Test {i + 1}/{len(test_queries)} ---")
             logger.debug(f"Query: {query}")
             logger.debug(f"Expected: {expected_answer}")
+            logger.debug(f"Open question: {is_open_question}")
 
             generated_answer, retrieved_ids, retrieved_contents = await self.rag_query(
                 query,
@@ -338,6 +399,7 @@ class RAGQuerySystem:
                 bm25_weight,
                 dense_weight,
                 use_google_fallback,
+                is_open_question,  # 传递开放题标识
             )
 
             result = {
@@ -353,6 +415,7 @@ class RAGQuerySystem:
                 "retrieved_contents": retrieved_contents,
                 "reference": reference,
                 "used_google": any("google-" in doc_id for doc_id in retrieved_ids),
+                "is_open_question": is_open_question,  # 记录是否为开放题
             }
 
             logger.debug("-" * 50)

@@ -214,31 +214,91 @@ async def main(test_file_path=None):
 def evaluate(queries):
     """
     评估函数，模拟处理查询并返回答案
+    前80条为简单问答题，后20条为开放题
     """
-    qs = [{"question": q, "answer": "", "reference": ""} for q in queries]
+    # 验证查询数量
+    if len(queries) != 100:
+        logger.warning(f"期望100条查询，实际收到{len(queries)}条")
+
+    # 构建测试数据，前80条为简单问答，后20条为开放题
+    qs = []
+    for i, q in enumerate(queries):
+        if i < 80:
+            # 前80条：简单问答题，answer为空
+            qs.append({"question": q, "answer": "", "reference": ""})
+        else:
+            # 后20条：开放题，answer为空，但会用不同的prompt处理
+            qs.append({"question": q, "answer": "", "reference": ""})
+
     final_path = "/home/xiachunxuan/nlp-homework/data/eval/final_test.json"
     with open(final_path, "w") as f:
         json.dump(qs, f, ensure_ascii=False, indent=4)
+
+    logger.info("评估开始：前80条为简单问答题，后20条为开放题")
     result = asyncio.run(main(final_path))
+
     qa_map = {}
-    print(result[0])
+    print(result[0])  # 打印配置信息
+
     for r in result:
-        if 'query' not in r:
+        if "query" not in r:
             continue
         question = r["query"]
         answer = r["generated_answer"]
-        qa_map[question] = answer
-    print(qa_map)
-    return [qa_map[query] for query in queries]
+        retr_contents = r["retrieved_contents"]
+        is_open = r.get("is_open_question", False)
+        qa_map[question] = {"answer": answer, "retrieved_contents": retr_contents}
+
+        # 记录问题类型到日志
+        question_type = "开放题" if is_open else "问答题"
+        logger.debug(f"{question_type}: {question[:50]}...")
+
+    logger.info(f"评估完成，处理了{len(qa_map)}个问题")
+
+    return_results = []
+    for q in queries[:80]:
+        if q in qa_map:
+            answer = qa_map[q]["answer"]
+            retrieved_contents = qa_map[q]["retrieved_contents"]
+            return_results.append(answer)
+        else:
+            # return_results.append({
+            #     "question": q,
+            #     "answer": "未找到答案",
+            #     "retrieved_contents": []
+            # })
+            raise ValueError(f"查询 '{q}' 未找到答案，请检查输入数据是否正确")
+    for q in queries[-20:]:
+        if q in qa_map:
+            answer = qa_map[q]["answer"]
+            retrieved_contents = qa_map[q]["retrieved_contents"]
+            return_results.append(
+                {
+                    "ans": answer,
+                    "reference": retrieved_contents,
+                }
+            )
+        else:
+            # return_results.append({
+            #     "question": q,
+            #     "answer": "未找到答案",
+            #     "retrieved_contents": []
+            # })
+            raise ValueError(f"查询 '{q}' 未找到答案，请检查输入数据是否正确")
+
+    # 按原始顺序返回答案
+    return [qa_map.get(query, "未找到答案") for query in queries]
 
 
 if __name__ == "__main__":
     # 运行异步主程序
     # result = asyncio.run(main())
     # print(result)
-    test_queries = [
-        '2024年3月18日,习近平总书记在湖南考察期间第一站来到了哪所学校?',
-        "中国第一大贸易伙伴是？",
-        "《共建“一带一路”：构建人类命运共同体的重大实践》白皮书什么时候发布？",
-    ]
+    # test_queries = [
+    #     "2024年3月18日,习近平总书记在湖南考察期间第一站来到了哪所学校?",
+    #     "中国第一大贸易伙伴是？",
+    #     "《共建“一带一路”：构建人类命运共同体的重大实践》白皮书什么时候发布？",
+    # ]
+    with open('data/eval/final_debug.json', 'r', encoding='utf-8') as f:
+        test_queries = json.load(f)
     evaluate(test_queries)
