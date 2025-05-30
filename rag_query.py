@@ -85,12 +85,14 @@ class RAGQuerySystem:
     def __init__(
         self,
         api_base,
+        api_key,
         model_name,
         max_new_tokens=512,
         enable_google_search=False,
         google_search_topk=3,
     ):
         self.api_base = api_base
+        self.api_key = api_key
         self.model_name = model_name
         self.max_new_tokens = max_new_tokens
         self.enable_google_search = enable_google_search
@@ -109,10 +111,10 @@ class RAGQuerySystem:
     def setup_client(self):
         """设置 OpenAI 客户端连接到 VLLM 服务器"""
         logger.info(
-            f"Setting up AsyncOpenAI client to connect to VLLM server at {self.api_base}..."
+            f"Setting up AsyncOpenAI client to connect to server at {self.api_base}..."
         )
         self.client = AsyncOpenAI(
-            api_key="EMPTY",  # VLLM 服务器不需要真实的 API key
+            api_key=self.api_key,  # VLLM 服务器不需要真实的 API key
             base_url=self.api_base,
         )
         logger.info("AsyncOpenAI client setup complete.")
@@ -135,7 +137,7 @@ class RAGQuerySystem:
             logger.error(f"Google搜索出错: {e}")
             return []
 
-    async def generate_answer_with_retry(self, messages, max_retries=1):
+    async def generate_answer_with_retry(self, messages, max_retries=10):
         """生成答案，如果格式不正确则重试"""
         # 第一次尝试，使用温度0
         try:
@@ -169,7 +171,6 @@ class RAGQuerySystem:
                     messages=messages,
                     max_tokens=self.max_new_tokens,
                     temperature=0.3,  # 使用非零温度
-                    top_p=0.8,
                     stop=None,
                 )
                 

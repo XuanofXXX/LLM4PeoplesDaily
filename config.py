@@ -2,11 +2,12 @@ import os
 
 # 基础RAG配置
 # JSONL_FILE_PATH = "data/llm_processed_meaningful_articles_v3_rag.jsonl"
-JSONL_FILE_PATH = os.getenv("JSONL_FILE_PATH", "data/corpus_v3.jsonl")  # 重新爬取标签等等
+JSONL_FILE_PATH = os.getenv("JSONL_FILE_PATH", "data/corpus_v4.jsonl")  # 重新爬取标签等等
 # JSONL_FILE_PATH = "data/corpus_v3_20230101_20241231.jsonl" # 重新爬取标签等等
 EXAMPLE_ANS_PATH = os.getenv("EXAMPLE_ANS_PATH", "data/eval/official_test_ans.json")
 # EXAMPLE_ANS_PATH = "data/eval/generated_qa_pairs.jsonl"
 VLLM_API_BASE = os.getenv("VLLM_API_BASE", "http://localhost:8000/v1")
+API_KEY = os.getenv("API_KEY", "EMPTY")  # 如果需要API Key可以设置，否则留空
 MODEL_NAME = os.getenv("MODEL_NAME", "/media/public/models/huggingface/Qwen/Qwen2.5-7B-Instruct")
 MAX_NEW_TOKENS = int(os.getenv("MAX_NEW_TOKENS", "500"))
 

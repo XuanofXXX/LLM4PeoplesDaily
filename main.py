@@ -26,6 +26,7 @@ from config import (
     ENABLE_GOOGLE_SEARCH,
     GOOGLE_SEARCH_TOPK,
     USE_GOOGLE_FALLBACK,
+    API_KEY,
 )
 
 # 初始化时间戳和logger
@@ -40,6 +41,7 @@ async def main():
     logger.info(f"JSONL_FILE_PATH: {JSONL_FILE_PATH}")
     logger.info(f"EXAMPLE_ANS_PATH: {EXAMPLE_ANS_PATH}")
     logger.info(f"VLLM_API_BASE: {VLLM_API_BASE}")
+    logger.info(f"API_KEY: {API_KEY}")
     logger.info(f"MODEL_NAME: {MODEL_NAME}")
     logger.info(f"MAX_NEW_TOKENS: {MAX_NEW_TOKENS}")
     logger.info(f"TOP_K_DOCUMENTS: {TOP_K_DOCUMENTS}")
@@ -67,6 +69,7 @@ async def main():
     cache_result = cache_manager.get_cache_dir(
         JSONL_FILE_PATH, RETRIEVAL_METHOD, DENSE_MODEL_NAME
     )
+    logger.info(f'Cache result: {cache_result}')
     if cache_result:
         cache_dir, file_hash = cache_result
         cache_paths = cache_manager.get_cache_paths(cache_dir)
@@ -118,6 +121,7 @@ async def main():
     try:
         rag_system = RAGQuerySystem(
             VLLM_API_BASE,
+            API_KEY,
             MODEL_NAME,
             MAX_NEW_TOKENS,
             enable_google_search=ENABLE_GOOGLE_SEARCH,
