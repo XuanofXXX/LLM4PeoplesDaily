@@ -292,13 +292,13 @@ def evaluate(queries):
 
 if __name__ == "__main__":
     # 运行异步主程序
-    # result = asyncio.run(main())
+    result = asyncio.run(main())
     # print(result)
     # test_queries = [
     #     "2024年3月18日,习近平总书记在湖南考察期间第一站来到了哪所学校?",
     #     "中国第一大贸易伙伴是？",
     #     "《共建“一带一路”：构建人类命运共同体的重大实践》白皮书什么时候发布？",
     # ]
-    with open('data/eval/final_debug.json', 'r', encoding='utf-8') as f:
-        test_queries = json.load(f)
-    evaluate(test_queries)
+    # with open('data/eval/final_gpt.json', 'r', encoding='utf-8') as f:
+    #     test_queries = json.load(f)
+    # evaluate(test_queries)
